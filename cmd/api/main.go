@@ -24,7 +24,11 @@ func main() {
 	}
 	defer db.Close()
 
-	svcs := service.New(db)
+	svcs, err := service.New(db)
+	if err != nil {
+		log.Fatal().Err(err).Msg("service initialization failed")
+	}
+
 	app := fiber.New()
 
 	app.Get("/health", func(c *fiber.Ctx) error { return c.SendString("ok") })
