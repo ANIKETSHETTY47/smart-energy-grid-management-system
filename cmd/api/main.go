@@ -1,15 +1,14 @@
 package main
 
 import (
-	"log"
+	"github.com/ANIKETSHETTY47/smart-energy-grid-management-system/internal/config"
+	"github.com/ANIKETSHETTY47/smart-energy-grid-management-system/internal/database"
+	httpHandlers "github.com/ANIKETSHETTY47/smart-energy-grid-management-system/internal/http"
+	"github.com/ANIKETSHETTY47/smart-energy-grid-management-system/internal/service"
 	"github.com/gofiber/fiber/v2"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/viper"
-	"smart/internal/config"
-	httpHandlers "smart/internal/http"
-	"smart/internal/database"
-	"smart/internal/service"
 )
 
 func main() {

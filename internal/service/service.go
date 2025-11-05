@@ -3,9 +3,10 @@ package service
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/ANIKETSHETTY47/smart-energy-grid-management-system/internal/domain"
+	"github.com/ANIKETSHETTY47/smart-energy-grid-management-system/internal/repository"
 	"github.com/jmoiron/sqlx"
-	"smart/internal/domain"
-	"smart/internal/repository"
 )
 
 type Services struct {
@@ -16,7 +17,7 @@ type Services struct {
 func New(db *sqlx.DB) *Services {
 	repos := repository.New(db)
 	return &Services{
-		Repos: repos,
+		Repos:    repos,
 		Readings: &ReadingService{repos: repos},
 	}
 }

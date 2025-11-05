@@ -1,8 +1,8 @@
 package repository
 
 import (
+	"github.com/ANIKETSHETTY47/smart-energy-grid-management-system/internal/domain"
 	"github.com/jmoiron/sqlx"
-	"smart/internal/domain"
 )
 
 type Repos struct {

@@ -4,9 +4,10 @@ import (
 	"encoding/json"
 	"math/rand"
 	"time"
-	"github.com/eclipse/paho.mqtt.golang"
+
+	"github.com/ANIKETSHETTY47/smart-energy-grid-management-system/internal/config"
+	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/rs/zerolog/log"
-	"smart/internal/config"
 )
 
 type Reading struct {

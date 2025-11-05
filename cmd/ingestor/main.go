@@ -1,13 +1,13 @@
 package main
 
 import (
-	"fmt"
 	"time"
-	"github.com/eclipse/paho.mqtt.golang"
+
+	"github.com/ANIKETSHETTY47/smart-energy-grid-management-system/internal/config"
+	"github.com/ANIKETSHETTY47/smart-energy-grid-management-system/internal/database"
+	"github.com/ANIKETSHETTY47/smart-energy-grid-management-system/internal/service"
+	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/rs/zerolog/log"
-	"smart/internal/config"
-	"smart/internal/service"
-	"smart/internal/database"
 )
 
 func main() {
@@ -41,5 +41,7 @@ func main() {
 	}
 
 	log.Info().Msg("ingestor running; Ctrl+C to stop")
-	for { time.Sleep(10 * time.Second) }
+	for {
+		time.Sleep(10 * time.Second)
+	}
 }
