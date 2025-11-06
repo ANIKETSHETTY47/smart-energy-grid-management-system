@@ -11,6 +11,27 @@ import (
 func Register(app *fiber.App, svcs *service.Services) {
 	g := app.Group("/")
 
+	// NEW: Root + health
+	g.Get("/", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{
+			"service": "smart-energy-grid-api",
+			"status":  "ok",
+			"endpoints": []string{
+				"/health",
+				"/facilities",
+				"/meters",
+				"/readings/recent?facility_id=facility-001&hours=24",
+				"/alerts?facility_id=facility-001",
+				"/alerts/:alert_id/acknowledge",
+				"/analytics/generate",
+				"/readings/check-anomaly",
+			},
+		})
+	})
+	g.Get("health", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{"status": "ok", "time": time.Now().UTC()})
+	})
+
 	// Existing handlers
 	g.Get("facilities", func(c *fiber.Ctx) error {
 		items, err := svcs.Repos.ListFacilities()
@@ -28,11 +49,11 @@ func Register(app *fiber.App, svcs *service.Services) {
 		return c.JSON(items)
 	})
 
-	// YOUR ORIGINAL CONTRIBUTION: Trigger daily analytics via Lambda
+	// Trigger daily analytics via Lambda
 	g.Post("analytics/generate", func(c *fiber.Ctx) error {
 		type Request struct {
 			FacilityID string `json:"facility_id"`
-			Date       string `json:"date"`
+			Date       string `json:"date"` // YYYY-MM-DD (UTC)
 		}
 
 		var req Request
@@ -43,13 +64,23 @@ func Register(app *fiber.App, svcs *service.Services) {
 		if req.FacilityID == "" {
 			req.FacilityID = "facility-001"
 		}
+		// CHANGED: default empty date to TODAY (UTC) instead of yesterday
 		if req.Date == "" {
-			req.Date = time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+			req.Date = time.Now().UTC().Format("2006-01-02")
 		}
 
 		reportURL, err := svcs.Analytics.GenerateDailyReport(req.FacilityID, req.Date)
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return c.Status(500).JSON(fiber.Map{"error": err.Error(), "date": req.Date})
+		}
+
+		// If Lambda returned no URL, surface a helpful message
+		if reportURL == "" {
+			return c.Status(200).JSON(fiber.Map{
+				"message":  "Analytics processed, but no report URL returned (likely no data for the date).",
+				"date":     req.Date,
+				"facility": req.FacilityID,
+			})
 		}
 
 		return c.JSON(fiber.Map{
@@ -60,7 +91,7 @@ func Register(app *fiber.App, svcs *service.Services) {
 		})
 	})
 
-	// YOUR ORIGINAL CONTRIBUTION: Get recent readings from DynamoDB
+	// Get recent readings from DynamoDB
 	g.Get("readings/recent", func(c *fiber.Ctx) error {
 		facilityID := c.Query("facility_id", "facility-001")
 		hours := c.QueryInt("hours", 24)
@@ -78,7 +109,7 @@ func Register(app *fiber.App, svcs *service.Services) {
 		})
 	})
 
-	// YOUR ORIGINAL CONTRIBUTION: Get alerts from DynamoDB
+	// Get alerts from DynamoDB
 	g.Get("alerts", func(c *fiber.Ctx) error {
 		facilityID := c.Query("facility_id", "facility-001")
 		severity := c.Query("severity", "")
@@ -101,7 +132,7 @@ func Register(app *fiber.App, svcs *service.Services) {
 		})
 	})
 
-	// YOUR ORIGINAL CONTRIBUTION: Acknowledge an alert
+	// Acknowledge an alert
 	g.Post("alerts/:alert_id/acknowledge", func(c *fiber.Ctx) error {
 		alertID := c.Params("alert_id")
 
@@ -115,7 +146,7 @@ func Register(app *fiber.App, svcs *service.Services) {
 		})
 	})
 
-	// YOUR ORIGINAL CONTRIBUTION: Trigger anomaly detection manually
+	// Trigger anomaly detection manually
 	g.Post("readings/check-anomaly", func(c *fiber.Ctx) error {
 		type Request struct {
 			FacilityID string  `json:"facility_id"`
@@ -151,6 +182,14 @@ func Register(app *fiber.App, svcs *service.Services) {
 		return c.JSON(fiber.Map{
 			"message": "Anomaly detection completed",
 			"result":  result,
+		})
+	})
+
+	// NEW: Friendly 404
+	app.Use(func(c *fiber.Ctx) error {
+		return c.Status(404).JSON(fiber.Map{
+			"error": "route not found",
+			"hint":  "see GET / for available endpoints",
 		})
 	})
 }

@@ -3,6 +3,10 @@ package config
 import "github.com/spf13/viper"
 
 func Load() error {
+	// Try to load .env file for local development
+	viper.SetConfigFile(".env")
+	viper.ReadInConfig() // Ignore error, will use env vars if .env doesn't exist
+
 	// API Configuration
 	viper.SetDefault("API_ADDR", ":8080")
 
@@ -15,7 +19,7 @@ func Load() error {
 	viper.SetDefault("AWS_REGION", "us-east-1")
 	viper.SetDefault("AWS_S3_BUCKET", "energy-grid-reports")
 	viper.SetDefault("AWS_SNS_TOPIC_ARN", "")
-	viper.SetDefault("USE_CLOUD_SERVICES", "false") // Toggle for local vs cloud
+	viper.SetDefault("USE_CLOUD_SERVICES", "false")
 
 	viper.AutomaticEnv()
 	return nil
