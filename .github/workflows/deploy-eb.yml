@@ -2,28 +2,25 @@ name: Deploy Smart Energy Grid to Elastic Beanstalk
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
 env:
   AWS_REGION: us-east-1
-  EB_APPLICATION_NAME: smart-energy-grid
-  EB_ENVIRONMENT_NAME: smart-energy-grid-env
-  S3_BUCKET: smart-energy-grid-deployments
+  EB_APPLICATION_NAME: smart-energy-grid            # must already exist
+  EB_ENVIRONMENT_NAME: smart-energy-grid-env        # must already exist
+  S3_BUCKET: smart-energy-grid-deployments          # change to your bucket
   DEPLOY_PACKAGE: smart-energy-grid-${{ github.sha }}.zip
 
 jobs:
   deploy:
     name: Deploy to Elastic Beanstalk
     runs-on: ubuntu-latest
-    
+
     steps:
-      # Checkout code
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # Configure AWS credentials
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -32,158 +29,125 @@ jobs:
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # Setup Go
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
 
-      # Download dependencies
       - name: Download Go Dependencies
         run: go mod download
 
-      # Run tests
-      # - name: Run Tests
-      #   run: go test ./... -cover
-
-      # Build the application
-      - name: Build Application
+      - name: Build Application (Linux)
         run: |
           echo "Building Go application..."
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/api ./cmd/api
           echo "Build complete!"
 
-      # Create deployment package
+      - name: Create Procfile if missing
+        run: |
+          if [ ! -f Procfile ]; then
+            echo "web: ./bin/api" > Procfile
+          fi
+          cat Procfile
+
       - name: Create Deployment Package
         run: |
           echo "Creating deployment package..."
-          zip -r ${{ env.DEPLOY_PACKAGE }} \
+          zip -r "${{ env.DEPLOY_PACKAGE }}" \
             bin/ \
+            Procfile \
             .ebextensions/ \
             .platform/ \
-            Procfile \
-            Buildfile \
-            go.mod \
-            go.sum \
-            internal/ \
-            pkg/ \
-            cmd/ \
+            go.mod go.sum \
+            internal/ pkg/ cmd/ \
             -x "*.git*" "*.env*" "*node_modules*" "*.vscode*"
-          
-          echo "Package created: ${{ env.DEPLOY_PACKAGE }}"
-          ls -lh ${{ env.DEPLOY_PACKAGE }}
+          ls -lh "${{ env.DEPLOY_PACKAGE }}"
 
-      # Upload to S3
+      - name: Ensure S3 bucket exists
+        run: |
+          if ! aws s3api head-bucket --bucket "${{ env.S3_BUCKET }}" 2>/dev/null; then
+            echo "Bucket ${{ env.S3_BUCKET }} not found; creating in ${{ env.AWS_REGION }}..."
+            aws s3api create-bucket \
+              --bucket "${{ env.S3_BUCKET }}" \
+              --create-bucket-configuration LocationConstraint=${{ env.AWS_REGION }} \
+              --region ${{ env.AWS_REGION }}
+          fi
+
       - name: Upload to S3
         run: |
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          BUCKET_NAME="smart-energy-grid-deployments-${ACCOUNT_ID}"
-          aws s3 cp smart-energy-grid.zip s3://smart-energy-grid-deployments/smart-energy-grid.zip --region us-east-1
-          echo "BUCKET_NAME=${BUCKET_NAME}" >> $GITHUB_ENV
+          aws s3 cp "${{ env.DEPLOY_PACKAGE }}" \
+            "s3://${{ env.S3_BUCKET }}/${{ env.DEPLOY_PACKAGE }}" \
+            --region ${{ env.AWS_REGION }}
 
-      # Create Elastic Beanstalk application version
       - name: Create EB Application Version
         run: |
-         VERSION_LABEL=v1-$(date +%Y%m%d%H%M%S)
+          VERSION_LABEL="v1-$(date +%Y%m%d%H%M%S)"
+          echo "Using version: $VERSION_LABEL"
           aws elasticbeanstalk create-application-version \
-           --application-name smart-energy-grid \
-           --version-label $VERSION_LABEL \
-           --source-bundle S3Bucket=smart-energy-grid-deployments,S3Key=smart-energy-grid.zip \
-           --region us-east-1
-           echo "VERSION_LABEL=$VERSION_LABEL" >> $GITHUB_ENV
+            --application-name "${{ env.EB_APPLICATION_NAME }}" \
+            --version-label "$VERSION_LABEL" \
+            --source-bundle S3Bucket=${{ env.S3_BUCKET }},S3Key=${{ env.DEPLOY_PACKAGE }} \
+            --region ${{ env.AWS_REGION }}
+          echo "VERSION_LABEL=$VERSION_LABEL" >> $GITHUB_ENV
 
-      # Deploy to Elastic Beanstalk
       - name: Deploy to Elastic Beanstalk
         run: |
           aws elasticbeanstalk update-environment \
-            --application-name smart-energy-grid \
-            --environment-name smart-energy-grid-env \
-            --version-label ${{ env.VERSION_LABEL }} \
-            --region us-east-1
-          
+            --application-name "${{ env.EB_APPLICATION_NAME }}" \
+            --environment-name "${{ env.EB_ENVIRONMENT_NAME }}" \
+            --version-label "${{ env.VERSION_LABEL }}" \
+            --region ${{ env.AWS_REGION }}
           echo "Deployment initiated!"
 
-      # Wait for deployment to complete
       - name: Wait for Deployment
         run: |
           echo "Waiting for environment to be ready..."
-          
           max_attempts=30
           attempt=0
-          
           while [ $attempt -lt $max_attempts ]; do
             status=$(aws elasticbeanstalk describe-environments \
-              --application-name ${{ env.EB_APPLICATION_NAME }} \
-              --environment-names ${{ env.EB_ENVIRONMENT_NAME }} \
-              --region ${{ env.AWS_REGION }} \
-              --query 'Environments[0].Status' \
-              --output text)
-            
+              --application-name "${{ env.EB_APPLICATION_NAME }}" \
+              --environment-names "${{ env.EB_ENVIRONMENT_NAME }}" \
+              --region "${{ env.AWS_REGION }}" \
+              --query 'Environments[0].Status' --output text)
             health=$(aws elasticbeanstalk describe-environments \
-              --application-name ${{ env.EB_APPLICATION_NAME }} \
-              --environment-names ${{ env.EB_ENVIRONMENT_NAME }} \
-              --region ${{ env.AWS_REGION }} \
-              --query 'Environments[0].Health' \
-              --output text)
-            
+              --application-name "${{ env.EB_APPLICATION_NAME }}" \
+              --environment-names "${{ env.EB_ENVIRONMENT_NAME }}" \
+              --region "${{ env.AWS_REGION }}" \
+              --query 'Environments[0].Health' --output text)
             echo "Status: $status, Health: $health"
-            
-            if [ "$status" == "Ready" ] && [ "$health" == "Green" ]; then
+            if [ "$status" = "Ready" ] && [ "$health" = "Green" ]; then
               echo "✅ Deployment successful!"
               exit 0
             fi
-            
-            if [ "$status" == "Ready" ] && [ "$health" == "Yellow" ]; then
+            if [ "$status" = "Ready" ] && [ "$health" = "Yellow" ]; then
               echo "⚠️ Deployment complete but health is Yellow"
               exit 0
             fi
-            
-            if [ "$health" == "Red" ]; then
+            if [ "$health" = "Red" ]; then
               echo "❌ Deployment failed - Environment health is Red"
               exit 1
             fi
-            
             attempt=$((attempt + 1))
-            echo "Waiting... (attempt $attempt/$max_attempts)"
+            echo "Waiting... ($attempt/$max_attempts)"
             sleep 20
           done
-          
           echo "❌ Deployment timeout"
           exit 1
 
-      # Get environment URL
       - name: Get Environment URL
         if: success()
         run: |
           CNAME=$(aws elasticbeanstalk describe-environments \
-            --application-name ${{ env.EB_APPLICATION_NAME }} \
-            --environment-names ${{ env.EB_ENVIRONMENT_NAME }} \
-            --region ${{ env.AWS_REGION }} \
-            --query 'Environments[0].CNAME' \
-            --output text)
-          
-          echo "🚀 Application deployed successfully!"
-          echo "📍 URL: http://$CNAME"
+            --application-name "${{ env.EB_APPLICATION_NAME }}" \
+            --environment-names "${{ env.EB_ENVIRONMENT_NAME }}" \
+            --region "${{ env.AWS_REGION }}" \
+            --query 'Environments[0].CNAME' --output text)
           echo "ENVIRONMENT_URL=http://$CNAME" >> $GITHUB_ENV
+          echo "URL: http://$CNAME"
 
-      # Smoke test
       - name: Smoke Test
         if: success()
         run: |
-          echo "Running smoke test..."
-          sleep 10
-          
-          CNAME=$(aws elasticbeanstalk describe-environments \
-            --application-name ${{ env.EB_APPLICATION_NAME }} \
-            --environment-names ${{ env.EB_ENVIRONMENT_NAME }} \
-            --region ${{ env.AWS_REGION }} \
-            --query 'Environments[0].CNAME' \
-            --output text)
-          
-          response=$(curl -s -o /dev/null -w "%{http_code}" http://$CNAME/health)
-          
-          if [ "$response" == "200" ]; then
-            echo "✅ Smoke test passed!"
-          else
-            echo "⚠️ Smoke test returned status code: $response"
-          fi
+          resp=$(curl -s -o /dev/null -w "%{http_code}" "$ENVIRONMENT_URL/health")
+          echo "Health status: $resp"
