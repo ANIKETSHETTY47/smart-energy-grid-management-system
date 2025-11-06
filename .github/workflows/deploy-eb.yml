@@ -74,27 +74,23 @@ jobs:
           ls -lh ${{ env.DEPLOY_PACKAGE }}
 
       # Upload to S3
-      - name: Upload Package to S3
+      - name: Upload to S3
         run: |
-          echo "Uploading to S3..."
-          aws s3 cp ${{ env.DEPLOY_PACKAGE }} \
-            s3://${{ env.S3_BUCKET }}/${{ env.DEPLOY_PACKAGE }}
-          echo "Upload complete!"
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          BUCKET_NAME="smart-energy-grid-deployments-${ACCOUNT_ID}"
+          aws s3 cp smart-energy-grid.zip s3://smart-energy-grid-deployments/smart-energy-grid.zip --region us-east-1
+          echo "BUCKET_NAME=${BUCKET_NAME}" >> $GITHUB_ENV
 
       # Create Elastic Beanstalk application version
       - name: Create EB Application Version
         run: |
-          VERSION_LABEL=v1-$(date +%Y%m%d%H%M%S)
-          echo "Using version: $VERSION_LABEL"
-          
+         VERSION_LABEL=v1-$(date +%Y%m%d%H%M%S)
           aws elasticbeanstalk create-application-version \
-            --application-name smart-energy-grid \
-            --version-label $VERSION_LABEL \
-            --source-bundle S3Bucket=smart-energy-grid-deployments,S3Key=smart-energy-grid.zip \
-            --region us-east-1
-          
-          echo "VERSION_LABEL=$VERSION_LABEL" >> $GITHUB_ENV
-          echo "Application version created: $VERSION_LABEL"
+           --application-name smart-energy-grid \
+           --version-label $VERSION_LABEL \
+           --source-bundle S3Bucket=smart-energy-grid-deployments,S3Key=smart-energy-grid.zip \
+           --region us-east-1
+           echo "VERSION_LABEL=$VERSION_LABEL" >> $GITHUB_ENV
 
       # Deploy to Elastic Beanstalk
       - name: Deploy to Elastic Beanstalk
