@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/ANIKETSHETTY47/smart-energy-grid-management-system/internal/cloud"
@@ -22,6 +23,7 @@ type Services struct {
 	DynamoDB *cloud.DynamoDBClient
 	S3       *cloud.S3Client
 	SNS      *cloud.SNSClient
+	Lambda   *cloud.LambdaClient
 	UseCloud bool
 }
 
@@ -52,11 +54,18 @@ func New(db *sqlx.DB) (*Services, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to init SNS: %w", err)
 		}
+
+		// Add Lambda client initialization
+		svcs.Lambda, err = cloud.NewLambdaClient(config.AWSRegion())
+		if err != nil {
+			return nil, fmt.Errorf("failed to init Lambda: %w", err)
+		}
 	}
 
 	svcs.Readings = &ReadingService{
 		repos:    repos,
 		dynamoDB: svcs.DynamoDB,
+		lambda:   svcs.Lambda,
 		useCloud: svcs.UseCloud,
 	}
 
@@ -64,6 +73,7 @@ func New(db *sqlx.DB) (*Services, error) {
 		repos:    repos,
 		dynamoDB: svcs.DynamoDB,
 		s3:       svcs.S3,
+		lambda:   svcs.Lambda,
 		useCloud: svcs.UseCloud,
 	}
 
@@ -81,6 +91,7 @@ func New(db *sqlx.DB) (*Services, error) {
 type ReadingService struct {
 	repos    *repository.Repos
 	dynamoDB *cloud.DynamoDBClient
+	lambda   *cloud.LambdaClient
 	useCloud bool
 }
 
@@ -97,17 +108,50 @@ func (s *ReadingService) FromMQTT(topic string, payload []byte) error {
 		return err
 	}
 
+	// Parse meter ID to int64
+	var meterIDInt int64 = 1
+	if r.MeterID != "" {
+		parsed, err := strconv.ParseInt(r.MeterID, 10, 64)
+		if err == nil {
+			meterIDInt = parsed
+		}
+	}
+
 	rd := &domain.Reading{
-		MeterID:   1, // demo mapping
+		MeterID:   meterIDInt,
 		Timestamp: r.Timestamp,
 		Voltage:   r.Voltage,
 		Current:   r.Current,
 		PowerKW:   r.PowerKW,
 	}
 
-	// Store in cloud if enabled, otherwise use local DB
+	// Store in cloud if enabled
 	if s.useCloud && s.dynamoDB != nil {
-		return s.dynamoDB.PutReading(rd, "facility-001")
+		if err := s.dynamoDB.PutReading(rd, "facility-001"); err != nil {
+			return err
+		}
+
+		// Optionally invoke Lambda for immediate anomaly detection
+		if s.lambda != nil {
+			payload := cloud.AnomalyDetectionPayload{
+				FacilityID: "facility-001",
+				MeterID:    r.MeterID,
+				Timestamp:  r.Timestamp.Unix(),
+				Voltage:    r.Voltage,
+				Current:    r.Current,
+				PowerKW:    r.PowerKW,
+			}
+
+			// Invoke asynchronously (fire and forget)
+			go func() {
+				_, err := s.lambda.InvokeAnomalyDetection(payload)
+				if err != nil {
+					fmt.Printf("Failed to invoke anomaly detection: %v\n", err)
+				}
+			}()
+		}
+
+		return nil
 	}
 
 	return s.repos.InsertReading(rd)
@@ -128,6 +172,7 @@ type AnalyticsService struct {
 	repos    *repository.Repos
 	dynamoDB *cloud.DynamoDBClient
 	s3       *cloud.S3Client
+	lambda   *cloud.LambdaClient
 	useCloud bool
 }
 
@@ -180,7 +225,44 @@ func (s *AnalyticsService) getReadingsForDate(facilityID string, date time.Time)
 	return []domain.Reading{}, nil
 }
 
-// GenerateReport generates and stores a PDF report
+// GenerateDailyReport generates daily analytics report using Lambda
+// YOUR ORIGINAL CONTRIBUTION: Leverage serverless computing for report generation
+func (s *AnalyticsService) GenerateDailyReport(facilityID, date string) (string, error) {
+	if !s.useCloud || s.lambda == nil {
+		return "", fmt.Errorf("cloud services not enabled")
+	}
+
+	// Invoke Lambda function to process analytics
+	result, err := s.lambda.InvokeAnalyticsProcessing(date, facilityID)
+	if err != nil {
+		return "", fmt.Errorf("failed to invoke analytics Lambda: %w", err)
+	}
+
+	// Extract report URL from response
+	if body, ok := result["body"].(map[string]interface{}); ok {
+		if reportURL, ok := body["report_url"].(string); ok {
+			return reportURL, nil
+		}
+	}
+
+	return "", fmt.Errorf("no report URL in response")
+}
+
+// ScheduleDailyAnalytics triggers daily analytics processing asynchronously
+// YOUR ORIGINAL CONTRIBUTION: Background job processing using serverless
+func (s *AnalyticsService) ScheduleDailyAnalytics(facilityID string) error {
+	if !s.useCloud || s.lambda == nil {
+		return fmt.Errorf("cloud services not enabled")
+	}
+
+	// Use yesterday's date
+	yesterday := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+
+	// Invoke asynchronously
+	return s.lambda.InvokeAnalyticsAsync(yesterday, facilityID)
+}
+
+// GenerateReport generates and stores a report (using S3 directly)
 func (s *AnalyticsService) GenerateReport(facilityID string, startDate, endDate time.Time) (string, error) {
 	if !s.useCloud || s.s3 == nil {
 		return "", fmt.Errorf("cloud services not enabled")
