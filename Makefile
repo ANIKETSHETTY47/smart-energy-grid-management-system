@@ -18,7 +18,7 @@ simulate:
 	go run ./cmd/simulator
 
 test:
-	go test ./... -cover
+	go test ./... -v
 
 lint:
 	golangci-lint run || true
