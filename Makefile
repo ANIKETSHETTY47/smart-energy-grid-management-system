@@ -18,7 +18,8 @@ simulate:
 	go run ./cmd/simulator
 
 test:
-	go test ./... -v
+	go test ./... -cover -coverprofile=coverage.out
+	go tool cover -html=coverage.out -o coverage.html
 
 lint:
 	golangci-lint run || true
