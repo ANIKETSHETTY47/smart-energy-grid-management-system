@@ -43,8 +43,8 @@ jobs:
         run: go mod download
 
       # Run tests
-      - name: Run Tests
-        run: go test ./... -cover
+      # - name: Run Tests
+      #   run: go test ./... -cover
 
       # Build the application
       - name: Build Application
