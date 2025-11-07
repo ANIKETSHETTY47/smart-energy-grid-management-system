@@ -1,0 +1,36 @@
+{{define "layout"}}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}}</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <div class="logo">
+        <span class="logo-icon">⚡</span>
+        <h1>Energy Grid</h1>
+      </div>
+    </div>
+    <nav class="sidebar-nav">
+      <a href="/dashboard" class="nav-item">Dashboard</a>
+      <a href="/alerts" class="nav-item">Alerts</a>
+      <a href="/analytics" class="nav-item">Analytics</a>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="api-status {{.APIStatus}}">
+        <span class="status-dot"></span>
+        <span>API {{.APIStatus}}</span>
+      </div>
+    </div>
+  </aside>
+  <main class="main-content">
+    {{template "content" .}}
+  </main>
+</body>
+</html>
+{{end}}

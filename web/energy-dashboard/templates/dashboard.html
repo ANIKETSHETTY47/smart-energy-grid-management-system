@@ -1,0 +1,118 @@
+{{define "content"}}
+<div class="dashboard">
+  <div class="dashboard-header">
+    <h1>Energy Grid Dashboard</h1>
+    <div class="header-info">
+      <span>Facility: {{.FacilityID}}</span>
+      <form method="get" action="/dashboard">
+        <button class="refresh-btn" type="submit">Refresh</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="stats-grid" id="stats-grid"></div>
+
+  <div class="chart-container">
+    <h2>Real-Time Power Consumption</h2>
+    <canvas id="lineChart"></canvas>
+  </div>
+
+  <div class="chart-container">
+    <h2>24-Hour Average Power by Hour</h2>
+    <canvas id="barChart"></canvas>
+  </div>
+
+  {{if .Alerts}}
+  <div class="alerts-preview">
+    <h2>Recent Alerts</h2>
+    <div class="alerts-list-preview" id="alerts-preview"></div>
+  </div>
+  {{end}}
+</div>
+
+<script>
+  const readings = ({{.ReadingsJSON}} || {}).readings || [];
+  const alerts = ({{.Alerts | toJSON}} || {}).alerts || [];
+
+  function fmtTime(ts) {
+    const d = new Date(ts*1000);
+    return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  }
+
+  const lineLabels = readings.slice(-50).map(r => fmtTime(r.timestamp));
+  const powerSeries = readings.slice(-50).map(r => r.power_kw || 0);
+
+  const ctx1 = document.getElementById('lineChart').getContext('2d');
+  new Chart(ctx1, {
+    type: 'line',
+    data: {
+      labels: lineLabels,
+      datasets: [{
+        label: 'Power (kW)',
+        data: powerSeries,
+        borderWidth: 2
+      }]
+    },
+    options: { responsive: true, plugins:{ legend:{ display:true } } }
+  });
+
+  // Hourly averages
+  const hourly = {};
+  readings.forEach(r => {
+    const h = new Date(r.timestamp*1000).getHours();
+    hourly[h] = hourly[h] || { total:0, count:0 };
+    hourly[h].total += (r.power_kw || 0);
+    hourly[h].count += 1;
+  });
+  const barLabels = Object.keys(hourly).map(h => h + ':00');
+  const barData = Object.values(hourly).map(v => (v.total / v.count).toFixed(2));
+
+  const ctx2 = document.getElementById('barChart').getContext('2d');
+  new Chart(ctx2, {
+    type: 'bar',
+    data: {
+      labels: barLabels,
+      datasets: [{
+        label: 'Average Power (kW)',
+        data: barData
+      }]
+    },
+    options: { responsive: true, plugins:{ legend:{ display:true } } }
+  });
+
+  function sum(arr) { return arr.reduce((a,b)=>a+b,0); }
+  function max(arr) { return arr.length? Math.max(...arr):0; }
+  const totalConsumption = sum(readings.map(r => r.power_kw||0)).toFixed(2);
+  const avgPower = (readings.length? (totalConsumption/ readings.length):0).toFixed(2);
+  const peakPower = max(readings.map(r => r.power_kw||0)).toFixed(2);
+  const activeAlerts = alerts.filter(a => !a.acknowledged).length;
+
+  const stats = [
+    { title:'Total Consumption', value: totalConsumption+' kWh' },
+    { title:'Average Power', value: avgPower+' kW' },
+    { title:'Peak Power', value: peakPower+' kW' },
+    { title:'Active Alerts', value: activeAlerts }
+  ];
+
+  const statsEl = document.getElementById('stats-grid');
+  stats.forEach(s => {
+    const div = document.createElement('div');
+    div.className = 'stat-card';
+    div.innerHTML = `<div class="stat-content"><h3>${s.title}</h3><p class="stat-value">${s.value}</p></div>`;
+    statsEl.appendChild(div);
+  });
+
+  const alertsEl = document.getElementById('alerts-preview');
+  if (alertsEl) {
+    alerts.slice(0,5).forEach(a => {
+      const d = new Date(a.timestamp*1000);
+      const item = document.createElement('div');
+      item.className = 'alert-item ' + a.severity;
+      item.innerHTML = `<span>${a.message}</span><span class="alert-time">${d.toLocaleString()}</span>`;
+      alertsEl.appendChild(item);
+    });
+  }
+</script>
+{{end}}
+
+{{template "layout" .}}

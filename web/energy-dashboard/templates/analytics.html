@@ -1,0 +1,67 @@
+{{define "content"}}
+<div class="analytics-container">
+  <div class="analytics-header">
+    <h2>Analytics & Reports</h2>
+  </div>
+  <div class="report-generator">
+    <h3>Generate Daily Report</h3>
+    <form method="post" class="generator-form">
+      <div class="form-group">
+        <label>Facility</label>
+        <input type="text" value="{{.FacilityID}}" disabled />
+      </div>
+      <div class="form-group">
+        <label>Date</label>
+        <input type="date" name="date" value="{{.Today}}" max="{{.Today}}" />
+      </div>
+      <button class="generate-btn" type="submit">Generate Report</button>
+    </form>
+
+    {{if .Report}}
+      {{with .Report}}
+        {{if .Error}}
+          <div class="error-message">{{.Error}}</div>
+        {{else}}
+          <div class="report-result">
+            <div class="result-header">
+              <h4>Report Generated Successfully</h4>
+            </div>
+            <div class="report-details">
+              <p><strong>Date:</strong> {{.Date}}</p>
+              <p><strong>Facility:</strong> {{.Facility}}</p>
+              {{if .ReportURL}}
+                <a class="download-btn" href="{{.ReportURL}}" target="_blank" rel="noopener">Download Report</a>
+              {{end}}
+            </div>
+            {{if .Analytics}}
+              <div class="analytics-summary">
+                <h4>Summary Statistics</h4>
+                <div class="summary-grid">
+                  <div class="summary-item">
+                    <span class="label">Total Consumption</span>
+                    <span class="value">{{.Analytics.TotalConsumption}} kWh</span>
+                  </div>
+                  <div class="summary-item">
+                    <span class="label">Average Power</span>
+                    <span class="value">{{.Analytics.AveragePower}} kW</span>
+                  </div>
+                  <div class="summary-item">
+                    <span class="label">Peak Power</span>
+                    <span class="value">{{.Analytics.PeakPower}} kW</span>
+                  </div>
+                  <div class="summary-item">
+                    <span class="label">Peak Hour</span>
+                    <span class="value">{{.Analytics.PeakHour}}</span>
+                  </div>
+                </div>
+              </div>
+            {{end}}
+          </div>
+        {{end}}
+      {{end}}
+    {{end}}
+  </div>
+</div>
+{{end}}
+
+{{template "layout" .}}
