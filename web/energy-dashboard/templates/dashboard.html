@@ -1,117 +1,381 @@
 {{define "content"}}
-<div class="dashboard">
+<div class="dashboard fade-in">
   <div class="dashboard-header">
-    <h1>Energy Grid Dashboard</h1>
+    <div>
+      <h1>Energy Grid Dashboard</h1>
+      <p style="color: #64748b; margin-top: 0.5rem;">Real-time monitoring - Facility: {{.FacilityID}}</p>
+    </div>
     <div class="header-info">
-      <span>Facility: {{.FacilityID}}</span>
-      <form method="get" action="/dashboard">
-        <button class="refresh-btn" type="submit">Refresh</button>
-      </form>
+      <div class="connection-status" id="wsStatus">
+        <span class="status-indicator"></span>
+        <span>Connecting...</span>
+      </div>
+      <button class="refresh-btn" onclick="location.reload()">
+        <span>🔄</span> Refresh
+      </button>
     </div>
   </div>
 
-  <div class="stats-grid" id="stats-grid"></div>
-
-  <div class="chart-container">
-    <h2>Real-Time Power Consumption</h2>
-    <canvas id="lineChart"></canvas>
+  <div class="stats-grid" id="stats-grid">
+    <div class="stat-card">
+      <div class="stat-content">
+        <h3>Total Consumption</h3>
+        <p class="stat-value" id="totalConsumption">
+          <span class="loading"></span>
+        </p>
+        <div class="stat-change positive">
+          <span>↑</span> <span id="consumptionChange">-</span>
+        </div>
+      </div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-content">
+        <h3>Average Power</h3>
+        <p class="stat-value" id="avgPower">
+          <span class="loading"></span>
+        </p>
+        <div class="stat-change" id="avgPowerChangeParent">
+          <span>-</span> <span id="avgPowerChange">-</span>
+        </div>
+      </div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-content">
+        <h3>Peak Power</h3>
+        <p class="stat-value" id="peakPower">
+          <span class="loading"></span>
+        </p>
+        <div class="stat-change" id="peakPowerChangeParent">
+          <span>-</span> <span id="peakPowerChange">-</span>
+        </div>
+      </div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-content">
+        <h3>Active Alerts</h3>
+        <p class="stat-value" id="activeAlerts">
+          <span class="loading"></span>
+        </p>
+        <div class="stat-change negative">
+          <span>!</span> <span id="alertsText">-</span>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div class="chart-container">
-    <h2>24-Hour Average Power by Hour</h2>
-    <canvas id="barChart"></canvas>
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+      <h2>Power Consumption (kW)</h2>
+      <div class="chart-controls">
+        <button class="chart-btn active" onclick="changeTimePeriod('1h', this)">1H</button>
+        <button class="chart-btn" onclick="changeTimePeriod('6h', this)">6H</button>
+        <button class="chart-btn" onclick="changeTimePeriod('24h', this)">24H</button>
+      </div>
+    </div>
+    <canvas id="lineChart" height="80"></canvas>
   </div>
 
-  {{if .Alerts}}
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 2rem;">
+    <div class="chart-container">
+      <h2>Hourly Distribution</h2>
+      <canvas id="barChart" height="200"></canvas>
+    </div>
+    <div class="chart-container">
+      <h2>Voltage and Current</h2>
+      <canvas id="multiLineChart" height="200"></canvas>
+    </div>
+  </div>
+
   <div class="alerts-preview">
-    <h2>Recent Alerts</h2>
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+      <h2>Recent Alerts</h2>
+      <a href="/alerts" style="color: #3b82f6; text-decoration: none; font-weight: 600;">View All →</a>
+    </div>
     <div class="alerts-list-preview" id="alerts-preview"></div>
   </div>
-  {{end}}
 </div>
 
 <script>
-  const readings = ({{.ReadingsJSON}} || {}).readings || [];
-  const alerts = ({{.Alerts | toJSON}} || {}).alerts || [];
+let ws;
+let lineChart, barChart, multiLineChart;
+let previousStats = {};
 
-  function fmtTime(ts) {
-    const d = new Date(ts*1000);
-    return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+document.addEventListener('DOMContentLoaded', function() {
+  initCharts();
+  loadInitialData();
+  connectWebSocket();
+});
+
+function connectWebSocket() {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = protocol + '//' + window.location.host + '/ws';
+  
+  ws = new WebSocket(wsUrl);
+  
+  ws.onopen = function() {
+    updateConnectionStatus(true);
+  };
+  
+  ws.onclose = function() {
+    updateConnectionStatus(false);
+    setTimeout(connectWebSocket, 5000);
+  };
+  
+  ws.onerror = function(error) {
+    console.error('WebSocket error:', error);
+    updateConnectionStatus(false);
+  };
+  
+  ws.onmessage = function(event) {
+    const msg = JSON.parse(event.data);
+    if (msg.type === 'init' || msg.type === 'update') {
+      updateDashboard(msg.data);
+    }
+  };
+}
+
+function updateConnectionStatus(connected) {
+  const status = document.getElementById('wsStatus');
+  if (connected) {
+    status.className = 'connection-status connected';
+    status.querySelector('span:last-child').textContent = 'Live';
+  } else {
+    status.className = 'connection-status disconnected';
+    status.querySelector('span:last-child').textContent = 'Disconnected';
   }
+}
 
-  const lineLabels = readings.slice(-50).map(r => fmtTime(r.timestamp));
-  const powerSeries = readings.slice(-50).map(r => r.power_kw || 0);
+function loadInitialData() {
+  const readingsData = JSON.parse('{{.ReadingsJSON}}');
+  const alertsData = JSON.parse('{{toJSON .Alerts}}');
+  
+  const readings = readingsData.readings || [];
+  const alerts = alertsData.alerts || [];
+  
+  updateDashboard({ readings: { readings: readings }, alerts: { alerts: alerts } });
+}
 
+function updateDashboard(data) {
+  const readings = data.readings && data.readings.readings ? data.readings.readings : [];
+  const alerts = data.alerts && data.alerts.alerts ? data.alerts.alerts : [];
+  
+  if (readings.length > 0) {
+    updateStats(readings);
+    updateCharts(readings);
+  }
+  
+  if (alerts.length > 0) {
+    updateAlerts(alerts);
+  }
+}
+
+function updateStats(readings) {
+  const powers = readings.map(function(r) { return r.power_kw || 0; });
+  const totalConsumption = powers.reduce(function(sum, p) { return sum + p; }, 0);
+  const avgPower = totalConsumption / powers.length;
+  const peakPower = Math.max.apply(Math, powers);
+  
+  animateValue('totalConsumption', previousStats.total || 0, totalConsumption, 'kWh');
+  animateValue('avgPower', previousStats.avg || 0, avgPower, 'kW');
+  animateValue('peakPower', previousStats.peak || 0, peakPower, 'kW');
+  
+  updateChange('avgPowerChange', previousStats.avg, avgPower, '%', 'avgPowerChangeParent');
+  updateChange('peakPowerChange', previousStats.peak, peakPower, '%', 'peakPowerChangeParent');
+  
+  previousStats = { total: totalConsumption, avg: avgPower, peak: peakPower };
+}
+
+function animateValue(elementId, start, end, suffix) {
+  const element = document.getElementById(elementId);
+  const duration = 1000;
+  const startTime = performance.now();
+  
+  function update(currentTime) {
+    const elapsed = currentTime - startTime;
+    const progress = Math.min(elapsed / duration, 1);
+    const value = start + (end - start) * easeOutCubic(progress);
+    element.textContent = value.toFixed(2) + ' ' + suffix;
+    
+    if (progress < 1) {
+      requestAnimationFrame(update);
+    }
+  }
+  
+  requestAnimationFrame(update);
+}
+
+function easeOutCubic(t) {
+  return 1 - Math.pow(1 - t, 3);
+}
+
+function updateChange(elementId, oldVal, newVal, suffix, parentId) {
+  if (oldVal === undefined || oldVal === 0) return;
+  
+  const change = ((newVal - oldVal) / oldVal) * 100;
+  const element = document.getElementById(elementId);
+  const parent = document.getElementById(parentId);
+  
+  if (Math.abs(change) < 0.1) {
+    element.textContent = 'No change';
+    parent.className = 'stat-change';
+    parent.querySelector('span:first-child').textContent = '→';
+  } else if (change > 0) {
+    element.textContent = '+' + Math.abs(change).toFixed(1) + suffix;
+    parent.className = 'stat-change positive';
+    parent.querySelector('span:first-child').textContent = '↑';
+  } else {
+    element.textContent = change.toFixed(1) + suffix;
+    parent.className = 'stat-change negative';
+    parent.querySelector('span:first-child').textContent = '↓';
+  }
+}
+
+function updateAlerts(alerts) {
+  const activeAlerts = alerts.filter(function(a) { return !a.acknowledged; }).length;
+  document.getElementById('activeAlerts').textContent = activeAlerts;
+  document.getElementById('alertsText').textContent = activeAlerts > 0 ? 'Needs attention' : 'All clear';
+  
+  const preview = document.getElementById('alerts-preview');
+  if (!preview) return;
+  
+  preview.innerHTML = '';
+  const displayAlerts = alerts.slice(0, 5);
+  for (var i = 0; i < displayAlerts.length; i++) {
+    const alert = displayAlerts[i];
+    const item = document.createElement('div');
+    item.className = 'alert-item ' + alert.severity;
+    const time = new Date(alert.timestamp * 1000).toLocaleString();
+    item.innerHTML = '<div style="flex: 1;"><strong>' + alert.type + '</strong>: ' + alert.message + '</div><span class="alert-time">' + time + '</span>';
+    preview.appendChild(item);
+  }
+}
+
+function initCharts() {
   const ctx1 = document.getElementById('lineChart').getContext('2d');
-  new Chart(ctx1, {
+  lineChart = new Chart(ctx1, {
     type: 'line',
     data: {
-      labels: lineLabels,
+      labels: [],
       datasets: [{
         label: 'Power (kW)',
-        data: powerSeries,
-        borderWidth: 2
+        data: [],
+        borderColor: '#3b82f6',
+        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+        borderWidth: 3,
+        fill: true,
+        tension: 0.4
       }]
     },
-    options: { responsive: true, plugins:{ legend:{ display:true } } }
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        y: { beginAtZero: true },
+        x: { grid: { display: false } }
+      }
+    }
   });
-
-  // Hourly averages
-  const hourly = {};
-  readings.forEach(r => {
-    const h = new Date(r.timestamp*1000).getHours();
-    hourly[h] = hourly[h] || { total:0, count:0 };
-    hourly[h].total += (r.power_kw || 0);
-    hourly[h].count += 1;
-  });
-  const barLabels = Object.keys(hourly).map(h => h + ':00');
-  const barData = Object.values(hourly).map(v => (v.total / v.count).toFixed(2));
-
+  
   const ctx2 = document.getElementById('barChart').getContext('2d');
-  new Chart(ctx2, {
+  barChart = new Chart(ctx2, {
     type: 'bar',
     data: {
-      labels: barLabels,
+      labels: [],
       datasets: [{
         label: 'Average Power (kW)',
-        data: barData
+        data: [],
+        backgroundColor: 'rgba(59, 130, 246, 0.8)'
       }]
     },
-    options: { responsive: true, plugins:{ legend:{ display:true } } }
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: { y: { beginAtZero: true } }
+    }
   });
-
-  function sum(arr) { return arr.reduce((a,b)=>a+b,0); }
-  function max(arr) { return arr.length? Math.max(...arr):0; }
-  const totalConsumption = sum(readings.map(r => r.power_kw||0)).toFixed(2);
-  const avgPower = (readings.length? (totalConsumption/ readings.length):0).toFixed(2);
-  const peakPower = max(readings.map(r => r.power_kw||0)).toFixed(2);
-  const activeAlerts = alerts.filter(a => !a.acknowledged).length;
-
-  const stats = [
-    { title:'Total Consumption', value: totalConsumption+' kWh' },
-    { title:'Average Power', value: avgPower+' kW' },
-    { title:'Peak Power', value: peakPower+' kW' },
-    { title:'Active Alerts', value: activeAlerts }
-  ];
-
-  const statsEl = document.getElementById('stats-grid');
-  stats.forEach(s => {
-    const div = document.createElement('div');
-    div.className = 'stat-card';
-    div.innerHTML = `<div class="stat-content"><h3>${s.title}</h3><p class="stat-value">${s.value}</p></div>`;
-    statsEl.appendChild(div);
+  
+  const ctx3 = document.getElementById('multiLineChart').getContext('2d');
+  multiLineChart = new Chart(ctx3, {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [
+        {
+          label: 'Voltage (V)',
+          data: [],
+          borderColor: '#10b981',
+          yAxisID: 'y'
+        },
+        {
+          label: 'Current (A)',
+          data: [],
+          borderColor: '#f59e0b',
+          yAxisID: 'y1'
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        y: { type: 'linear', position: 'left', title: { display: true, text: 'Voltage (V)' } },
+        y1: { type: 'linear', position: 'right', title: { display: true, text: 'Current (A)' }, grid: { drawOnChartArea: false } }
+      }
+    }
   });
+}
 
-  const alertsEl = document.getElementById('alerts-preview');
-  if (alertsEl) {
-    alerts.slice(0,5).forEach(a => {
-      const d = new Date(a.timestamp*1000);
-      const item = document.createElement('div');
-      item.className = 'alert-item ' + a.severity;
-      item.innerHTML = `<span>${a.message}</span><span class="alert-time">${d.toLocaleString()}</span>`;
-      alertsEl.appendChild(item);
-    });
+function updateCharts(readings) {
+  if (!readings || readings.length === 0) return;
+  
+  const limitedReadings = readings.slice(-50);
+  
+  const labels = limitedReadings.map(function(r) {
+    const d = new Date(r.timestamp * 1000);
+    return d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+  });
+  const powerData = limitedReadings.map(function(r) { return r.power_kw || 0; });
+  
+  lineChart.data.labels = labels;
+  lineChart.data.datasets[0].data = powerData;
+  lineChart.update('none');
+  
+  const hourly = {};
+  for (var i = 0; i < readings.length; i++) {
+    const r = readings[i];
+    const h = new Date(r.timestamp * 1000).getHours();
+    if (!hourly[h]) hourly[h] = { total: 0, count: 0 };
+    hourly[h].total += (r.power_kw || 0);
+    hourly[h].count += 1;
   }
+  
+  const hours = Object.keys(hourly).sort(function(a, b) { return a - b; });
+  const barLabels = hours.map(function(h) { return (h < 10 ? '0' + h : h) + ':00'; });
+  const barData = hours.map(function(h) { return (hourly[h].total / hourly[h].count).toFixed(2); });
+  
+  barChart.data.labels = barLabels;
+  barChart.data.datasets[0].data = barData;
+  barChart.update('none');
+  
+  const voltageData = limitedReadings.map(function(r) { return r.voltage || 0; });
+  const currentData = limitedReadings.map(function(r) { return r.current || 0; });
+  
+  multiLineChart.data.labels = labels;
+  multiLineChart.data.datasets[0].data = voltageData;
+  multiLineChart.data.datasets[1].data = currentData;
+  multiLineChart.update('none');
+}
+
+function changeTimePeriod(period, button) {
+  const buttons = document.querySelectorAll('.chart-btn');
+  for (var i = 0; i < buttons.length; i++) {
+    buttons[i].classList.remove('active');
+  }
+  button.classList.add('active');
+  console.log('Changed to period:', period);
+}
 </script>
 {{end}}
 

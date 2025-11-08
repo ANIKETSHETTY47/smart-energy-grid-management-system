@@ -1,0 +1,165 @@
+{{define "content"}}
+<div class="fade-in">
+  <div class="dashboard-header">
+    <div>
+      <h1>Equipment Monitoring</h1>
+      <p style="color: #64748b; margin-top: 0.5rem;">Real-time health tracking - Facility: {{.FacilityID}}</p>
+    </div>
+    <div class="header-info">
+      <button class="refresh-btn" onclick="location.reload()">
+        <span>🔄</span> Refresh
+      </button>
+    </div>
+  </div>
+
+  <div class="stats-grid">
+    <div class="stat-card">
+      <div class="stat-content">
+        <h3>Total Equipment</h3>
+        <p class="stat-value">{{len .Equipment}}</p>
+      </div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-content">
+        <h3>Operational</h3>
+        <p class="stat-value" style="color: #10b981;" id="operational">0</p>
+      </div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-content">
+        <h3>Warning</h3>
+        <p class="stat-value" style="color: #f59e0b;" id="warning">0</p>
+      </div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-content">
+        <h3>Average Health</h3>
+        <p class="stat-value" id="avgHealth">0%</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="equipment-grid">
+    {{range .Equipment}}
+    <div class="equipment-card">
+      <div class="equipment-header">
+        <div class="equipment-title">
+          <h3>{{.Type}}</h3>
+          <span class="equipment-id">{{.ID}}</span>
+        </div>
+        <span class="equipment-status {{.Status}}">{{.Status}}</span>
+      </div>
+      
+      <div class="health-indicator">
+        <div class="health-label">
+          <span>Health Score</span>
+          <strong>{{printf "%.1f" .Health}}%</strong>
+        </div>
+        <div class="health-bar">
+          <div class="health-fill {{if gt .Health 90.0}}excellent{{else if gt .Health 75.0}}good{{else if gt .Health 60.0}}warning{{else}}critical{{end}}" 
+               data-health="{{.Health}}"></div>
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem;">
+        <div>
+          <div style="font-size: 0.75rem; color: #64748b; text-transform: uppercase;">Last Check</div>
+          <div style="font-weight: 600; margin-top: 0.25rem;">2 hours ago</div>
+        </div>
+        <div>
+          <div style="font-size: 0.75rem; color: #64748b; text-transform: uppercase;">Next Service</div>
+          <div style="font-weight: 600; margin-top: 0.25rem;">30 days</div>
+        </div>
+      </div>
+
+      <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #e2e8f0;">
+        <button class="btn-acknowledge" onclick="scheduleMaintenance('{{.ID}}')">
+          Schedule Maintenance
+        </button>
+      </div>
+    </div>
+    {{end}}
+  </div>
+
+  <div class="chart-container" style="margin-top: 2rem;">
+    <h2>Equipment Health Trends</h2>
+    <canvas id="healthTrendChart" height="80"></canvas>
+  </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  const equipmentData = JSON.parse('{{.Equipment | toJSON}}');
+  
+  let operational = 0;
+  let warning = 0;
+  let totalHealth = 0;
+  
+  equipmentData.forEach(function(eq) {
+    if (eq.status === 'operational') operational++;
+    else if (eq.status === 'warning') warning++;
+    totalHealth += eq.health;
+  });
+  
+  document.getElementById('operational').textContent = operational;
+  document.getElementById('warning').textContent = warning;
+  document.getElementById('avgHealth').textContent = (totalHealth / equipmentData.length).toFixed(1) + '%';
+  
+  initHealthTrendChart(equipmentData);
+});
+
+function initHealthTrendChart(equipment) {
+  const ctx = document.getElementById('healthTrendChart').getContext('2d');
+  
+  const days = [];
+  for (let i = 30; i >= 0; i--) {
+    const date = new Date();
+    date.setDate(date.getDate() - i);
+    days.push(date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+  }
+  
+  const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444'];
+  const datasets = equipment.map(function(eq, idx) {
+    const data = days.map(function() {
+      return eq.health + (Math.random() * 10 - 5);
+    });
+    
+    return {
+      label: eq.type + ' (' + eq.id + ')',
+      data: data,
+      borderColor: colors[idx % colors.length],
+      borderWidth: 2,
+      tension: 0.4,
+      fill: false
+    };
+  });
+  
+  new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: days,
+      datasets: datasets
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { position: 'top' } },
+      scales: {
+        y: {
+          beginAtZero: false,
+          min: 60,
+          max: 100,
+          title: { display: true, text: 'Health Score (%)' }
+        }
+      }
+    }
+  });
+}
+
+function scheduleMaintenance(equipmentId) {
+  alert('Scheduling maintenance for equipment: ' + equipmentId);
+}
+</script>
+{{end}}
+
+{{template "layout" .}}
