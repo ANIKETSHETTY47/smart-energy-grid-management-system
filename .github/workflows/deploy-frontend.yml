@@ -59,7 +59,7 @@ jobs:
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Ensure S3 bucket exists
+      - name: Ensure S3 bucket existsƒ
         run: |
           if ! aws s3 ls "s3://${{ env.S3_BUCKET }}" >/dev/null 2>&1; then
             aws s3 mb "s3://${{ env.S3_BUCKET }}" --region "${{ env.AWS_REGION }}"
@@ -97,7 +97,7 @@ jobs:
           # Try to find the latest Go platform on AL2023
           PLATFORM_ARN=$(aws elasticbeanstalk list-platform-versions \
             --region "${{ env.AWS_REGION }}" \
-            --query 'PlatformSummaryList[?contains(PlatformBranchName, `Go`) && contains(PlatformBranchName, `2023`)] | sort_by(@, &PlatformVersion)[-1].PlatformArn' \
+            --query 'reverse(sort_by(PlatformSummaryList[?contains(PlatformBranchName, `Go`) && contains(PlatformBranchName, `2023`)], &PlatformVersion))[0].PlatformArn' \
             --output text)
 
           if [ -z "$PLATFORM_ARN" ] || [ "$PLATFORM_ARN" = "None" ]; then
