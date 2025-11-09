@@ -87,79 +87,82 @@
   </div>
 </div>
 
+<script id="equipmentData" type="application/json">
+{{toJSON .Equipment}}
+</script>
+
 <script>
 document.addEventListener('DOMContentLoaded', function() {
-  const equipmentData = JSON.parse('{{.Equipment | toJSON}}');
-  
-  let operational = 0;
-  let warning = 0;
-  let totalHealth = 0;
-  
-  equipmentData.forEach(function(eq) {
+  // Inject the array/null directly as a JS value
+  const dataScript = document.getElementById('equipmentData');
+  const equipmentData = dataScript ? JSON.parse(dataScript.textContent || '[]') : [];
+
+  // Normalize keys
+  const norm = (eq) => ({
+    id: eq.id ?? eq.ID,
+    type: eq.type ?? eq.Type,
+    status: (eq.status ?? eq.Status ?? '').toString().toLowerCase(),
+    health: Number(eq.health ?? eq.Health ?? 0)
+  });
+  const list = Array.isArray(equipmentData) ? equipmentData.map(norm) : [];
+
+  let operational = 0, warning = 0, totalHealth = 0;
+  list.forEach((eq) => {
     if (eq.status === 'operational') operational++;
     else if (eq.status === 'warning') warning++;
     totalHealth += eq.health;
   });
-  
+
   document.getElementById('operational').textContent = operational;
   document.getElementById('warning').textContent = warning;
-  document.getElementById('avgHealth').textContent = (totalHealth / equipmentData.length).toFixed(1) + '%';
-  
-  initHealthTrendChart(equipmentData);
+  document.getElementById('avgHealth').textContent =
+    (list.length ? (totalHealth / list.length).toFixed(1) : '0.0') + '%';
+
+  // If you want the chart even with no data, call it with an empty list
+  initHealthTrendChart(list);
 });
 
 function initHealthTrendChart(equipment) {
   const ctx = document.getElementById('healthTrendChart').getContext('2d');
-  
+
   const days = [];
   for (let i = 30; i >= 0; i--) {
-    const date = new Date();
-    date.setDate(date.getDate() - i);
-    days.push(date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    days.push(d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
   }
-  
-  const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444'];
-  const datasets = equipment.map(function(eq, idx) {
-    const data = days.map(function() {
-      return eq.health + (Math.random() * 10 - 5);
-    });
-    
+
+  // If no equipment, show a placeholder series so the chart renders
+  const series = equipment.length ? equipment : [{ id: '—', type: 'No Data', health: 0 }];
+
+  const palette = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
+  const datasets = series.map((eq, idx) => {
+    const data = days.map(() =>
+      Math.max(0, Math.min(100, (eq.health || 0) + (Math.random() * 10 - 5)))
+    );
     return {
-      label: eq.type + ' (' + eq.id + ')',
-      data: data,
-      borderColor: colors[idx % colors.length],
+      label: `${eq.type} (${eq.id})`,
+      data,
+      borderColor: palette[idx % palette.length],
       borderWidth: 2,
       tension: 0.4,
       fill: false
     };
   });
-  
+
   new Chart(ctx, {
     type: 'line',
-    data: {
-      labels: days,
-      datasets: datasets
-    },
+    data: { labels: days, datasets },
     options: {
       responsive: true,
       maintainAspectRatio: false,
       plugins: { legend: { position: 'top' } },
-      scales: {
-        y: {
-          beginAtZero: false,
-          min: 60,
-          max: 100,
-          title: { display: true, text: 'Health Score (%)' }
-        }
-      }
+      scales: { y: { min: 0, max: 100, title: { display: true, text: 'Health Score (%)' } } }
     }
   });
 }
-
-function scheduleMaintenance(equipmentId) {
-  alert('Scheduling maintenance for equipment: ' + equipmentId);
-}
 </script>
+
 {{end}}
 
 {{template "layout" .}}
