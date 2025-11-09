@@ -35,8 +35,8 @@ jobs:
         run: |
           go mod tidy
           go build -o energy-dashboard-go ./main.go
+          ls -lh energy-dashboard-go
 
-      # === CHANGED: Simplified Zip Strategy ===
       - name: Zip Frontend Application
         working-directory: web/energy-dashboard
         run: |
@@ -56,58 +56,96 @@ jobs:
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # === CHANGED: Direct Upload to S3 ===
+      - name: Ensure S3 bucket exists (no-op if it does)
+        run: |
+          if ! aws s3 ls "s3://${{ env.S3_BUCKET }}" >/dev/null 2>&1; then
+            aws s3 mb "s3://${{ env.S3_BUCKET }}" --region "${{ env.AWS_REGION }}"
+          fi
+
       - name: Upload Frontend to S3
         working-directory: web/energy-dashboard
         run: |
-          aws s3 cp frontend-app.zip s3://${{ env.S3_BUCKET }}/frontend-app.zip
+          aws s3 cp frontend-app.zip "s3://${{ env.S3_BUCKET }}/frontend-app.zip" --region "${{ env.AWS_REGION }}"
 
-      # === CHANGED: Simplified Version Creation ===
-      - name: Create EB Application Version
+      - name: Create EB Application (if needed)
         run: |
-          VERSION_LABEL=v1-$(date +%Y%m%d%H%M%S)
-          echo "Using version: $VERSION_LABEL"
-          aws elasticbeanstalk create-application-version \
-            --application-name ${{ env.EB_APP_NAME }} \
-            --version-label $VERSION_LABEL \
-            --source-bundle S3Bucket=${{ env.S3_BUCKET }},S3Key=frontend-app.zip \
-            --region ${{ env.AWS_REGION }}
-          echo "VERSION_LABEL=$VERSION_LABEL" >> $GITHUB_ENV
-
-      # === CHANGED: Create Environment if Doesn't Exist ===
-      - name: Check/Create EB Environment
-        run: |
-          if ! aws elasticbeanstalk describe-environments \
-            --application-name ${{ env.EB_APP_NAME }} \
-            --environment-names ${{ env.EB_ENV_NAME }} \
-            --query 'Environments[?Status!=`Terminated`].EnvironmentName' \
-            --output text | grep -q "${{ env.EB_ENV_NAME }}"; then
-              echo "Creating new environment..."
-              aws elasticbeanstalk create-environment \
-                --application-name ${{ env.EB_APP_NAME }} \
-                --environment-name ${{ env.EB_ENV_NAME }} \
-                --solution-stack-name "64bit Amazon Linux 2023 v4.3.3 running Go 1" \
-                --version-label ${{ env.VERSION_LABEL }} \
-                --option-settings \
-                  Namespace=aws:elasticbeanstalk:application:environment,OptionName=API_URL,Value=http://smart-energy-grid-env.us-east-1.elasticbeanstalk.com \
-                  Namespace=aws:elasticbeanstalk:application:environment,OptionName=PORT,Value=3000
-              echo "Waiting for environment creation..."
-              sleep 120
+          if [ "$(aws elasticbeanstalk describe-applications \
+                --application-names "${{ env.EB_APP_NAME }}" \
+                --query 'length(Applications)' \
+                --output text 2>/dev/null)" = "0" ]; then
+            aws elasticbeanstalk create-application \
+              --application-name "${{ env.EB_APP_NAME }}" \
+              --region "${{ env.AWS_REGION }}"
           fi
 
-      # === CHANGED: Direct Environment Update ===
+      - name: Create EB Application Version
+        run: |
+          VERSION_LABEL="v1-$(date +%Y%m%d%H%M%S)"
+          echo "Using version: $VERSION_LABEL"
+          aws elasticbeanstalk create-application-version \
+            --application-name "${{ env.EB_APP_NAME }}" \
+            --version-label "$VERSION_LABEL" \
+            --source-bundle S3Bucket="${{ env.S3_BUCKET }}",S3Key=frontend-app.zip \
+            --region "${{ env.AWS_REGION }}"
+          echo "VERSION_LABEL=$VERSION_LABEL" >> "$GITHUB_ENV"
+
+      - name: Resolve EB Platform ARN (Go on AL2023)
+        run: |
+          PLATFORM_ARN=$(aws elasticbeanstalk list-platform-versions \
+            --region "${{ env.AWS_REGION }}" \
+            --filters Type="PlatformName",Operator="=",Value="Go 1 running on 64bit Amazon Linux 2023" \
+            --query 'sort_by(PlatformSummaryList,&PlatformVersion)[-1].PlatformArn' \
+            --output text)
+          if [ -z "$PLATFORM_ARN" ] || [ "$PLATFORM_ARN" = "None" ]; then
+            echo "Failed to resolve AL2023 Go platform ARN" >&2
+            exit 1
+          fi
+          echo "Using platform: $PLATFORM_ARN"
+          echo "PLATFORM_ARN=$PLATFORM_ARN" >> "$GITHUB_ENV"
+
+      - name: Check/Create EB Environment
+        run: |
+          EXISTING_ENV=$(aws elasticbeanstalk describe-environments \
+            --application-name "${{ env.EB_APP_NAME }}" \
+            --environment-names "${{ env.EB_ENV_NAME }}" \
+            --query 'Environments[?Status!=`Terminated`].EnvironmentName' \
+            --output text \
+            --region "${{ env.AWS_REGION }}")
+
+          if [ -z "$EXISTING_ENV" ]; then
+            echo "Creating new environment..."
+            aws elasticbeanstalk create-environment \
+              --application-name "${{ env.EB_APP_NAME }}" \
+              --environment-name "${{ env.EB_ENV_NAME }}" \
+              --platform-arn "$PLATFORM_ARN" \
+              --version-label "$VERSION_LABEL" \
+              --option-settings \
+                Namespace=aws:elasticbeanstalk:application:environment,OptionName=API_URL,Value=http://smart-energy-grid-env.eba-qgkwbhh7.us-east-1.elasticbeanstalk.com \
+                Namespace=aws:elasticbeanstalk:application:environment,OptionName=PORT,Value=3000 \
+              --region "${{ env.AWS_REGION }}"
+
+            # (Optional) Wait for environment health to become Ready/Green before continuing
+            aws elasticbeanstalk wait environment-exists \
+              --application-name "${{ env.EB_APP_NAME }}" \
+              --environment-names "${{ env.EB_ENV_NAME }}" \
+              --region "${{ env.AWS_REGION }}"
+          else
+            echo "Environment already exists: ${EXISTING_ENV}"
+          fi
+
       - name: Deploy Frontend to Elastic Beanstalk
         run: |
           aws elasticbeanstalk update-environment \
-            --application-name ${{ env.EB_APP_NAME }} \
-            --environment-name ${{ env.EB_ENV_NAME }} \
-            --version-label ${{ env.VERSION_LABEL }} \
-            --region ${{ env.AWS_REGION }}
+            --application-name "${{ env.EB_APP_NAME }}" \
+            --environment-name "${{ env.EB_ENV_NAME }}" \
+            --version-label "$VERSION_LABEL" \
+            --region "${{ env.AWS_REGION }}"
 
       - name: Output Environment URL
         run: |
           URL=$(aws elasticbeanstalk describe-environments \
-            --application-name ${{ env.EB_APP_NAME }} \
-            --environment-names ${{ env.EB_ENV_NAME }} \
-            --query 'Environments[0].CNAME' --output text)
+            --application-name "${{ env.EB_APP_NAME }}" \
+            --environment-names "${{ env.EB_ENV_NAME }}" \
+            --query 'Environments[0].CNAME' --output text \
+            --region "${{ env.AWS_REGION }}")
           echo "✅ Frontend URL: http://${URL}"
