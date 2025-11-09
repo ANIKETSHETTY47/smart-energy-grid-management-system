@@ -96,40 +96,50 @@ jobs:
         run: |
           echo "Searching for Go platform on AL2023..."
           
+          # First, list all available platforms to see what we have
+          aws elasticbeanstalk list-platform-versions \
+            --region "${{ env.AWS_REGION }}" \
+            --query "PlatformSummaryList[?contains(PlatformBranchName, 'Go')].{Name:PlatformBranchName,Version:PlatformVersion,ARN:PlatformArn}" \
+            --output table
+          
           # Try to find the latest Go platform on AL2023
           PLATFORM_ARN=$(aws elasticbeanstalk list-platform-versions \
             --region "${{ env.AWS_REGION }}" \
             --query "reverse(sort_by(PlatformSummaryList[?contains(PlatformBranchName, 'Go') && contains(PlatformBranchName, '2023')], &PlatformVersion))[0].PlatformArn" \
-            --output text 2>&1)
+            --output text 2>&1 || echo "")
 
-          echo "Query result: '$PLATFORM_ARN'"
+          echo "AL2023 Query result: '$PLATFORM_ARN'"
 
-          # Check if the result is empty, "None", or "null"
-          if [ -z "$PLATFORM_ARN" ] || [ "$PLATFORM_ARN" = "None" ] || [ "$PLATFORM_ARN" = "null" ]; then
-            echo "❌ Failed to resolve AL2023 Go platform ARN"
-            echo ""
-            echo "Available Go platforms:"
-            aws elasticbeanstalk list-platform-versions \
-              --region "${{ env.AWS_REGION }}" \
-              --query "PlatformSummaryList[?contains(PlatformBranchName, 'Go')].{Name:PlatformBranchName,Version:PlatformVersion,ARN:PlatformArn}" \
-              --output table
-            echo ""
-            echo "Trying fallback: any available Go platform..."
+          # Validate the result - check for empty, "None", "null", or errors
+          if [ -z "$PLATFORM_ARN" ] || [ "$PLATFORM_ARN" = "None" ] || [ "$PLATFORM_ARN" = "null" ] || [[ "$PLATFORM_ARN" == *"Error"* ]] || [[ ! "$PLATFORM_ARN" == arn:* ]]; then
+            echo "⚠️ AL2023 Go platform not found, trying any Go platform..."
             
             # Fallback to any Go platform
             PLATFORM_ARN=$(aws elasticbeanstalk list-platform-versions \
               --region "${{ env.AWS_REGION }}" \
               --query "reverse(sort_by(PlatformSummaryList[?contains(PlatformBranchName, 'Go')], &PlatformVersion))[0].PlatformArn" \
-              --output text)
+              --output text 2>&1 || echo "")
             
-            if [ -z "$PLATFORM_ARN" ] || [ "$PLATFORM_ARN" = "None" ] || [ "$PLATFORM_ARN" = "null" ]; then
-              echo "❌ No Go platform found at all"
+            echo "Fallback Query result: '$PLATFORM_ARN'"
+            
+            # Validate fallback result
+            if [ -z "$PLATFORM_ARN" ] || [ "$PLATFORM_ARN" = "None" ] || [ "$PLATFORM_ARN" = "null" ] || [[ "$PLATFORM_ARN" == *"Error"* ]] || [[ ! "$PLATFORM_ARN" == arn:* ]]; then
+              echo "❌ No valid Go platform ARN found"
+              echo "This typically means:"
+              echo "1. No Go platforms are available in this region"
+              echo "2. Or there's an issue with AWS API permissions"
               exit 1
             fi
           fi
           
-          echo "✅ Using platform: $PLATFORM_ARN"
-          echo "PLATFORM_ARN=$PLATFORM_ARN" >> "$GITHUB_ENV"
+          # Double-check we have a valid ARN before writing to GITHUB_ENV
+          if [[ "$PLATFORM_ARN" == arn:aws:elasticbeanstalk:* ]]; then
+            echo "✅ Using platform: $PLATFORM_ARN"
+            echo "PLATFORM_ARN=$PLATFORM_ARN" >> "$GITHUB_ENV"
+          else
+            echo "❌ Invalid platform ARN format: $PLATFORM_ARN"
+            exit 1
+          fi
 
       - name: Check/Create IAM Instance Profile
         run: |
