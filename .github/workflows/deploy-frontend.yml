@@ -133,13 +133,228 @@ jobs:
             --query "reverse(sort_by(PlatformSummaryList[?contains(PlatformBranchName, 'Go') && contains(PlatformBranchName, '2023')], &PlatformVersion))[0].PlatformArn" \
             --output text > "$TEMP_FILE" 2>&1
           
-          PLATFORM_ARN=$(cat "$TEMP_FILE" | tr -d '\n' | tr -d '\r')
+          # Read and clean the output - remove any whitespace, newlines, and "None" strings
+          PLATFORM_ARN=$(cat "$TEMP_FILE" | grep -v '^None
+
+      - name: Check/Create IAM Instance Profile
+        run: |
+          set -e
+          echo "Checking IAM Instance Profile..."
+          
+          if aws iam get-instance-profile --instance-profile-name "${{ env.INSTANCE_PROFILE }}" >/dev/null 2>&1; then
+            echo "✅ Instance profile already exists"
+          else
+            echo "Creating IAM role and instance profile..."
+            
+            # Create the role
+            aws iam create-role \
+              --role-name "${{ env.INSTANCE_PROFILE }}" \
+              --assume-role-policy-document '{
+                "Version": "2012-10-17",
+                "Statement": [{
+                  "Effect": "Allow",
+                  "Principal": {"Service": "ec2.amazonaws.com"},
+                  "Action": "sts:AssumeRole"
+                }]
+              }' 2>/dev/null || echo "Role may already exist"
+            
+            # Attach managed policies
+            aws iam attach-role-policy \
+              --role-name "${{ env.INSTANCE_PROFILE }}" \
+              --policy-arn arn:aws:iam::aws:policy/AWSElasticBeanstalkWebTier 2>/dev/null || true
+            
+            aws iam attach-role-policy \
+              --role-name "${{ env.INSTANCE_PROFILE }}" \
+              --policy-arn arn:aws:iam::aws:policy/AWSElasticBeanstalkWorkerTier 2>/dev/null || true
+            
+            aws iam attach-role-policy \
+              --role-name "${{ env.INSTANCE_PROFILE }}" \
+              --policy-arn arn:aws:iam::aws:policy/AWSElasticBeanstalkMulticontainerDocker 2>/dev/null || true
+            
+            # Create instance profile
+            aws iam create-instance-profile \
+              --instance-profile-name "${{ env.INSTANCE_PROFILE }}" 2>/dev/null || echo "Instance profile may already exist"
+            
+            # Add role to instance profile
+            aws iam add-role-to-instance-profile \
+              --instance-profile-name "${{ env.INSTANCE_PROFILE }}" \
+              --role-name "${{ env.INSTANCE_PROFILE }}" 2>/dev/null || true
+            
+            echo "Waiting for IAM propagation..."
+            sleep 10
+            echo "✅ Instance profile created"
+          fi
+
+      - name: Check/Create Service Role
+        run: |
+          set -e
+          echo "Checking Service Role..."
+          
+          if aws iam get-role --role-name "${{ env.SERVICE_ROLE }}" >/dev/null 2>&1; then
+            echo "✅ Service role already exists"
+          else
+            echo "Creating service role..."
+            
+            aws iam create-role \
+              --role-name "${{ env.SERVICE_ROLE }}" \
+              --assume-role-policy-document '{
+                "Version": "2012-10-17",
+                "Statement": [{
+                  "Effect": "Allow",
+                  "Principal": {"Service": "elasticbeanstalk.amazonaws.com"},
+                  "Action": "sts:AssumeRole",
+                  "Condition": {
+                    "StringEquals": {
+                      "sts:ExternalId": "elasticbeanstalk"
+                    }
+                  }
+                }]
+              }' 2>/dev/null || echo "Role may already exist"
+            
+            aws iam attach-role-policy \
+              --role-name "${{ env.SERVICE_ROLE }}" \
+              --policy-arn arn:aws:iam::aws:policy/service-role/AWSElasticBeanstalkEnhancedHealth 2>/dev/null || true
+            
+            aws iam attach-role-policy \
+              --role-name "${{ env.SERVICE_ROLE }}" \
+              --policy-arn arn:aws:iam::aws:policy/AWSElasticBeanstalkManagedUpdatesCustomerRolePolicy 2>/dev/null || true
+            
+            echo "Waiting for IAM propagation..."
+            sleep 10
+            echo "✅ Service role created"
+          fi
+
+      - name: Check/Create EB Environment
+        run: |
+          set -e
+          echo "Checking if environment exists..."
+          
+          EXISTING_ENV=$(aws elasticbeanstalk describe-environments \
+            --application-name "${{ env.EB_APP_NAME }}" \
+            --environment-names "${{ env.EB_ENV_NAME }}" \
+            --query 'Environments[?Status!=`Terminated`].EnvironmentName' \
+            --output text \
+            --region "${{ env.AWS_REGION }}" 2>/dev/null || echo "")
+
+          if [ -z "$EXISTING_ENV" ]; then
+            echo "Creating new environment..."
+            
+            # Get account ID for ARN construction
+            ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+            
+            if [ -z "$ACCOUNT_ID" ] || [ "$ACCOUNT_ID" = "None" ]; then
+              echo "❌ Failed to get AWS Account ID"
+              exit 1
+            fi
+            
+            echo "Using Account ID: $ACCOUNT_ID"
+            
+            aws elasticbeanstalk create-environment \
+              --application-name "${{ env.EB_APP_NAME }}" \
+              --environment-name "${{ env.EB_ENV_NAME }}" \
+              --platform-arn "${{ env.PLATFORM_ARN }}" \
+              --version-label "${{ env.VERSION_LABEL }}" \
+              --option-settings \
+                Namespace=aws:autoscaling:launchconfiguration,OptionName=IamInstanceProfile,Value="${{ env.INSTANCE_PROFILE }}" \
+                Namespace=aws:elasticbeanstalk:environment,OptionName=ServiceRole,Value="arn:aws:iam::${ACCOUNT_ID}:role/${{ env.SERVICE_ROLE }}" \
+                Namespace=aws:elasticbeanstalk:application:environment,OptionName=API_URL,Value=http://smart-energy-grid-env.eba-qgkwbhh7.us-east-1.elasticbeanstalk.com \
+                Namespace=aws:elasticbeanstalk:application:environment,OptionName=PORT,Value=3000 \
+              --region "${{ env.AWS_REGION }}"
+
+            echo "Waiting for environment to exist..."
+            aws elasticbeanstalk wait environment-exists \
+              --application-name "${{ env.EB_APP_NAME }}" \
+              --environment-names "${{ env.EB_ENV_NAME }}" \
+              --region "${{ env.AWS_REGION }}"
+            
+            echo "✅ Environment created"
+          else
+            echo "✅ Environment already exists: ${EXISTING_ENV}"
+          fi
+
+      - name: Deploy Frontend to Elastic Beanstalk
+        run: |
+          set -e
+          echo "Deploying version ${{ env.VERSION_LABEL }} to environment..."
+          aws elasticbeanstalk update-environment \
+            --application-name "${{ env.EB_APP_NAME }}" \
+            --environment-name "${{ env.EB_ENV_NAME }}" \
+            --version-label "${{ env.VERSION_LABEL }}" \
+            --region "${{ env.AWS_REGION }}"
+          echo "✅ Deployment initiated"
+
+      - name: Wait for Deployment
+        run: |
+          set -e
+          echo "Waiting for environment to be ready..."
+          max_attempts=30
+          attempt=0
+          
+          while [ $attempt -lt $max_attempts ]; do
+            status=$(aws elasticbeanstalk describe-environments \
+              --application-name "${{ env.EB_APP_NAME }}" \
+              --environment-names "${{ env.EB_ENV_NAME }}" \
+              --region "${{ env.AWS_REGION }}" \
+              --query 'Environments[0].Status' --output text 2>/dev/null || echo "Unknown")
+            
+            health=$(aws elasticbeanstalk describe-environments \
+              --application-name "${{ env.EB_APP_NAME }}" \
+              --environment-names "${{ env.EB_ENV_NAME }}" \
+              --region "${{ env.AWS_REGION }}" \
+              --query 'Environments[0].Health' --output text 2>/dev/null || echo "Unknown")
+            
+            echo "Status: $status, Health: $health"
+            
+            if [ "$status" = "Ready" ] && [ "$health" = "Green" ]; then
+              echo "✅ Deployment successful!"
+              exit 0
+            fi
+            
+            if [ "$status" = "Ready" ] && [ "$health" = "Yellow" ]; then
+              echo "⚠️ Deployment complete but health is Yellow"
+              exit 0
+            fi
+            
+            if [ "$health" = "Red" ]; then
+              echo "❌ Deployment failed - Environment health is Red"
+              echo ""
+              echo "Recent events:"
+              aws elasticbeanstalk describe-events \
+                --application-name "${{ env.EB_APP_NAME }}" \
+                --environment-name "${{ env.EB_ENV_NAME }}" \
+                --max-items 10 \
+                --region "${{ env.AWS_REGION }}"
+              exit 1
+            fi
+            
+            attempt=$((attempt + 1))
+            echo "Waiting... ($attempt/$max_attempts)"
+            sleep 20
+          done
+          
+          echo "❌ Deployment timeout"
+          exit 1
+
+      - name: Output Environment URL
+        if: success()
+        run: |
+          URL=$(aws elasticbeanstalk describe-environments \
+            --application-name "${{ env.EB_APP_NAME }}" \
+            --environment-names "${{ env.EB_ENV_NAME }}" \
+            --query 'Environments[0].CNAME' --output text \
+            --region "${{ env.AWS_REGION }}" 2>/dev/null || echo "")
+          
+          if [ -z "$URL" ] || [ "$URL" = "None" ]; then
+            echo "⚠️ Could not retrieve environment URL"
+          else
+            echo "✅ Frontend URL: http://${URL}"
+          fi
           rm -f "$TEMP_FILE"
           
           echo "AL2023 Query result: '$PLATFORM_ARN'"
 
           # Check if AL2023 platform was found
-          if [ -z "$PLATFORM_ARN" ] || [ "$PLATFORM_ARN" = "None" ] || [ "$PLATFORM_ARN" = "null" ]; then
+          if [ -z "$PLATFORM_ARN" ] || [ "$PLATFORM_ARN" = "None" ] || [ "$PLATFORM_ARN" = "null" ] || [[ ! "$PLATFORM_ARN" =~ ^arn:aws:elasticbeanstalk: ]]; then
             echo "⚠️ AL2023 Go platform not found, trying any Go platform..."
             
             TEMP_FILE=$(mktemp)
@@ -148,7 +363,223 @@ jobs:
               --query "reverse(sort_by(PlatformSummaryList[?contains(PlatformBranchName, 'Go')], &PlatformVersion))[0].PlatformArn" \
               --output text > "$TEMP_FILE" 2>&1
             
-            PLATFORM_ARN=$(cat "$TEMP_FILE" | tr -d '\n' | tr -d '\r')
+            # Read and clean the output
+            PLATFORM_ARN=$(cat "$TEMP_FILE" | grep -v '^None
+
+      - name: Check/Create IAM Instance Profile
+        run: |
+          set -e
+          echo "Checking IAM Instance Profile..."
+          
+          if aws iam get-instance-profile --instance-profile-name "${{ env.INSTANCE_PROFILE }}" >/dev/null 2>&1; then
+            echo "✅ Instance profile already exists"
+          else
+            echo "Creating IAM role and instance profile..."
+            
+            # Create the role
+            aws iam create-role \
+              --role-name "${{ env.INSTANCE_PROFILE }}" \
+              --assume-role-policy-document '{
+                "Version": "2012-10-17",
+                "Statement": [{
+                  "Effect": "Allow",
+                  "Principal": {"Service": "ec2.amazonaws.com"},
+                  "Action": "sts:AssumeRole"
+                }]
+              }' 2>/dev/null || echo "Role may already exist"
+            
+            # Attach managed policies
+            aws iam attach-role-policy \
+              --role-name "${{ env.INSTANCE_PROFILE }}" \
+              --policy-arn arn:aws:iam::aws:policy/AWSElasticBeanstalkWebTier 2>/dev/null || true
+            
+            aws iam attach-role-policy \
+              --role-name "${{ env.INSTANCE_PROFILE }}" \
+              --policy-arn arn:aws:iam::aws:policy/AWSElasticBeanstalkWorkerTier 2>/dev/null || true
+            
+            aws iam attach-role-policy \
+              --role-name "${{ env.INSTANCE_PROFILE }}" \
+              --policy-arn arn:aws:iam::aws:policy/AWSElasticBeanstalkMulticontainerDocker 2>/dev/null || true
+            
+            # Create instance profile
+            aws iam create-instance-profile \
+              --instance-profile-name "${{ env.INSTANCE_PROFILE }}" 2>/dev/null || echo "Instance profile may already exist"
+            
+            # Add role to instance profile
+            aws iam add-role-to-instance-profile \
+              --instance-profile-name "${{ env.INSTANCE_PROFILE }}" \
+              --role-name "${{ env.INSTANCE_PROFILE }}" 2>/dev/null || true
+            
+            echo "Waiting for IAM propagation..."
+            sleep 10
+            echo "✅ Instance profile created"
+          fi
+
+      - name: Check/Create Service Role
+        run: |
+          set -e
+          echo "Checking Service Role..."
+          
+          if aws iam get-role --role-name "${{ env.SERVICE_ROLE }}" >/dev/null 2>&1; then
+            echo "✅ Service role already exists"
+          else
+            echo "Creating service role..."
+            
+            aws iam create-role \
+              --role-name "${{ env.SERVICE_ROLE }}" \
+              --assume-role-policy-document '{
+                "Version": "2012-10-17",
+                "Statement": [{
+                  "Effect": "Allow",
+                  "Principal": {"Service": "elasticbeanstalk.amazonaws.com"},
+                  "Action": "sts:AssumeRole",
+                  "Condition": {
+                    "StringEquals": {
+                      "sts:ExternalId": "elasticbeanstalk"
+                    }
+                  }
+                }]
+              }' 2>/dev/null || echo "Role may already exist"
+            
+            aws iam attach-role-policy \
+              --role-name "${{ env.SERVICE_ROLE }}" \
+              --policy-arn arn:aws:iam::aws:policy/service-role/AWSElasticBeanstalkEnhancedHealth 2>/dev/null || true
+            
+            aws iam attach-role-policy \
+              --role-name "${{ env.SERVICE_ROLE }}" \
+              --policy-arn arn:aws:iam::aws:policy/AWSElasticBeanstalkManagedUpdatesCustomerRolePolicy 2>/dev/null || true
+            
+            echo "Waiting for IAM propagation..."
+            sleep 10
+            echo "✅ Service role created"
+          fi
+
+      - name: Check/Create EB Environment
+        run: |
+          set -e
+          echo "Checking if environment exists..."
+          
+          EXISTING_ENV=$(aws elasticbeanstalk describe-environments \
+            --application-name "${{ env.EB_APP_NAME }}" \
+            --environment-names "${{ env.EB_ENV_NAME }}" \
+            --query 'Environments[?Status!=`Terminated`].EnvironmentName' \
+            --output text \
+            --region "${{ env.AWS_REGION }}" 2>/dev/null || echo "")
+
+          if [ -z "$EXISTING_ENV" ]; then
+            echo "Creating new environment..."
+            
+            # Get account ID for ARN construction
+            ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+            
+            if [ -z "$ACCOUNT_ID" ] || [ "$ACCOUNT_ID" = "None" ]; then
+              echo "❌ Failed to get AWS Account ID"
+              exit 1
+            fi
+            
+            echo "Using Account ID: $ACCOUNT_ID"
+            
+            aws elasticbeanstalk create-environment \
+              --application-name "${{ env.EB_APP_NAME }}" \
+              --environment-name "${{ env.EB_ENV_NAME }}" \
+              --platform-arn "${{ env.PLATFORM_ARN }}" \
+              --version-label "${{ env.VERSION_LABEL }}" \
+              --option-settings \
+                Namespace=aws:autoscaling:launchconfiguration,OptionName=IamInstanceProfile,Value="${{ env.INSTANCE_PROFILE }}" \
+                Namespace=aws:elasticbeanstalk:environment,OptionName=ServiceRole,Value="arn:aws:iam::${ACCOUNT_ID}:role/${{ env.SERVICE_ROLE }}" \
+                Namespace=aws:elasticbeanstalk:application:environment,OptionName=API_URL,Value=http://smart-energy-grid-env.eba-qgkwbhh7.us-east-1.elasticbeanstalk.com \
+                Namespace=aws:elasticbeanstalk:application:environment,OptionName=PORT,Value=3000 \
+              --region "${{ env.AWS_REGION }}"
+
+            echo "Waiting for environment to exist..."
+            aws elasticbeanstalk wait environment-exists \
+              --application-name "${{ env.EB_APP_NAME }}" \
+              --environment-names "${{ env.EB_ENV_NAME }}" \
+              --region "${{ env.AWS_REGION }}"
+            
+            echo "✅ Environment created"
+          else
+            echo "✅ Environment already exists: ${EXISTING_ENV}"
+          fi
+
+      - name: Deploy Frontend to Elastic Beanstalk
+        run: |
+          set -e
+          echo "Deploying version ${{ env.VERSION_LABEL }} to environment..."
+          aws elasticbeanstalk update-environment \
+            --application-name "${{ env.EB_APP_NAME }}" \
+            --environment-name "${{ env.EB_ENV_NAME }}" \
+            --version-label "${{ env.VERSION_LABEL }}" \
+            --region "${{ env.AWS_REGION }}"
+          echo "✅ Deployment initiated"
+
+      - name: Wait for Deployment
+        run: |
+          set -e
+          echo "Waiting for environment to be ready..."
+          max_attempts=30
+          attempt=0
+          
+          while [ $attempt -lt $max_attempts ]; do
+            status=$(aws elasticbeanstalk describe-environments \
+              --application-name "${{ env.EB_APP_NAME }}" \
+              --environment-names "${{ env.EB_ENV_NAME }}" \
+              --region "${{ env.AWS_REGION }}" \
+              --query 'Environments[0].Status' --output text 2>/dev/null || echo "Unknown")
+            
+            health=$(aws elasticbeanstalk describe-environments \
+              --application-name "${{ env.EB_APP_NAME }}" \
+              --environment-names "${{ env.EB_ENV_NAME }}" \
+              --region "${{ env.AWS_REGION }}" \
+              --query 'Environments[0].Health' --output text 2>/dev/null || echo "Unknown")
+            
+            echo "Status: $status, Health: $health"
+            
+            if [ "$status" = "Ready" ] && [ "$health" = "Green" ]; then
+              echo "✅ Deployment successful!"
+              exit 0
+            fi
+            
+            if [ "$status" = "Ready" ] && [ "$health" = "Yellow" ]; then
+              echo "⚠️ Deployment complete but health is Yellow"
+              exit 0
+            fi
+            
+            if [ "$health" = "Red" ]; then
+              echo "❌ Deployment failed - Environment health is Red"
+              echo ""
+              echo "Recent events:"
+              aws elasticbeanstalk describe-events \
+                --application-name "${{ env.EB_APP_NAME }}" \
+                --environment-name "${{ env.EB_ENV_NAME }}" \
+                --max-items 10 \
+                --region "${{ env.AWS_REGION }}"
+              exit 1
+            fi
+            
+            attempt=$((attempt + 1))
+            echo "Waiting... ($attempt/$max_attempts)"
+            sleep 20
+          done
+          
+          echo "❌ Deployment timeout"
+          exit 1
+
+      - name: Output Environment URL
+        if: success()
+        run: |
+          URL=$(aws elasticbeanstalk describe-environments \
+            --application-name "${{ env.EB_APP_NAME }}" \
+            --environment-names "${{ env.EB_ENV_NAME }}" \
+            --query 'Environments[0].CNAME' --output text \
+            --region "${{ env.AWS_REGION }}" 2>/dev/null || echo "")
+          
+          if [ -z "$URL" ] || [ "$URL" = "None" ]; then
+            echo "⚠️ Could not retrieve environment URL"
+          else
+            echo "✅ Frontend URL: http://${URL}"
+          fi
+          rm -f "$TEMP_FILE"
             rm -f "$TEMP_FILE"
             
             echo "Fallback Query result: '$PLATFORM_ARN'"
@@ -160,9 +591,15 @@ jobs:
             exit 1
           fi
           
-          # Ensure it's a valid ARN format
-          if [[ ! "$PLATFORM_ARN" =~ ^arn:aws:elasticbeanstalk: ]]; then
+          # Ensure it's a valid ARN format - must start with arn:aws:elasticbeanstalk and not contain "None"
+          if [[ ! "$PLATFORM_ARN" =~ ^arn:aws:elasticbeanstalk:[a-z0-9-]+:[0-9]+:platform/ ]]; then
             echo "❌ Invalid ARN format: '$PLATFORM_ARN'"
+            exit 1
+          fi
+          
+          # Check for "None" anywhere in the ARN (shouldn't happen but extra safety)
+          if [[ "$PLATFORM_ARN" == *"None"* ]]; then
+            echo "❌ ARN contains 'None': '$PLATFORM_ARN'"
             exit 1
           fi
           
