@@ -89,13 +89,16 @@ jobs:
             --region "${{ env.AWS_REGION }}"
           echo "VERSION_LABEL=$VERSION_LABEL" >> "$GITHUB_ENV"
 
+      # ✅ FIXED: Use JSON for --filters to avoid AWS CLI parse error
       - name: Resolve EB Platform ARN (Go on AL2023)
         run: |
+          FILTERS='[{"Type":"PlatformName","Operator":"=","Value":"Go 1 running on 64bit Amazon Linux 2023"}]'
           PLATFORM_ARN=$(aws elasticbeanstalk list-platform-versions \
             --region "${{ env.AWS_REGION }}" \
-            --filters Type="PlatformName",Operator="=",Value="Go 1 running on 64bit Amazon Linux 2023" \
+            --filters "$FILTERS" \
             --query 'sort_by(PlatformSummaryList,&PlatformVersion)[-1].PlatformArn' \
             --output text)
+
           if [ -z "$PLATFORM_ARN" ] || [ "$PLATFORM_ARN" = "None" ]; then
             echo "Failed to resolve AL2023 Go platform ARN" >&2
             exit 1
