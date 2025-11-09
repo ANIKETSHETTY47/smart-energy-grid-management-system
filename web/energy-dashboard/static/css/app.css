@@ -216,11 +216,6 @@ body {
   color: var(--danger);
 }
 
-/* =========================
-   CHARTS (Unified Rules)
-   ========================= */
-
-/* Full-width container controlled by fixed height (lengthwise) */
 .chart-container {
   position: relative;
   background: var(--white);
@@ -238,8 +233,6 @@ body {
   font-size: 1.25rem;
   font-weight: 700;
 }
-
-/* Canvas should exactly fill the container height/width */
 .chart-container canvas {
   display: block;
   width: 100% !important;

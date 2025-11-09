@@ -1,17 +1,17 @@
-name: Deploy Go Frontend to Elastic Beanstalk
+name: Deploy Frontend to Elastic Beanstalk
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
     paths:
-      - 'web/energy-dashboard-go/**'
+      - 'web/energy-dashboard/**'
   workflow_dispatch:
 
 env:
   AWS_REGION: us-east-1
-  EB_APP_NAME: energy-dashboard-go-frontend
-  EB_ENV_NAME: energy-dashboard-go-frontend-env
-  S3_BUCKET: energy-dashboard-go-deployments
+  EB_APP_NAME: energy-dashboard-frontend
+  EB_ENV_NAME: energy-dashboard-frontend-env
+  S3_BUCKET: energy-dashboard-deployments
 
 jobs:
   build-and-deploy:
@@ -26,21 +26,27 @@ jobs:
         with:
           go-version: '1.22'
 
-      - name: Build (Linux amd64)
-        working-directory: web/energy-dashboard-go
+      - name: Build Frontend (Linux amd64)
+        working-directory: web/energy-dashboard
         env:
           CGO_ENABLED: 0
           GOOS: linux
           GOARCH: amd64
         run: |
           go mod tidy
-          go build -o energy-dashboard-go ./...
+          go build -o energy-dashboard-go ./main.go
 
-      - name: Create deployment package
-        working-directory: web/energy-dashboard-go
+      # === CHANGED: Simplified Zip Strategy ===
+      - name: Zip Frontend Application
+        working-directory: web/energy-dashboard
         run: |
-          zip -r ../bundle-${{ github.sha }}.zip \
-            energy-dashboard-go Procfile templates static README.md
+          zip -r frontend-app.zip \
+            energy-dashboard-go \
+            Procfile \
+            templates/ \
+            static/ \
+            -x "*.git*" "*.env*"
+          ls -lh frontend-app.zip
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -50,51 +56,58 @@ jobs:
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Ensure S3 bucket exists
+      # === CHANGED: Direct Upload to S3 ===
+      - name: Upload Frontend to S3
+        working-directory: web/energy-dashboard
         run: |
-          aws s3api head-bucket --bucket ${{ env.S3_BUCKET }} 2>/dev/null || \
-          aws s3 mb s3://${{ env.S3_BUCKET }} --region ${{ env.AWS_REGION }}
+          aws s3 cp frontend-app.zip s3://${{ env.S3_BUCKET }}/frontend-app.zip
 
-      - name: Upload bundle to S3
+      # === CHANGED: Simplified Version Creation ===
+      - name: Create EB Application Version
         run: |
-          aws s3 cp web/bundle-${{ github.sha }}.zip s3://${{ env.S3_BUCKET }}/bundle-${{ github.sha }}.zip
-
-      - name: Create EB application (if needed)
-        run: |
-          aws elasticbeanstalk describe-applications --application-names "${{ env.EB_APP_NAME }}" >/dev/null 2>&1 || \
-          aws elasticbeanstalk create-application --application-name "${{ env.EB_APP_NAME }}"
-
-      - name: Create EB application version
-        run: |
+          VERSION_LABEL=v1-$(date +%Y%m%d%H%M%S)
+          echo "Using version: $VERSION_LABEL"
           aws elasticbeanstalk create-application-version \
-            --application-name "${{ env.EB_APP_NAME }}" \
-            --version-label "${{ github.sha }}" \
-            --source-bundle S3Bucket=${{ env.S3_BUCKET }},S3Key=bundle-${{ github.sha }}.zip
+            --application-name ${{ env.EB_APP_NAME }} \
+            --version-label $VERSION_LABEL \
+            --source-bundle S3Bucket=${{ env.S3_BUCKET }},S3Key=frontend-app.zip \
+            --region ${{ env.AWS_REGION }}
+          echo "VERSION_LABEL=$VERSION_LABEL" >> $GITHUB_ENV
 
-      - name: Create EB environment (if needed)
+      # === CHANGED: Create Environment if Doesn't Exist ===
+      - name: Check/Create EB Environment
         run: |
           if ! aws elasticbeanstalk describe-environments \
-            --application-name "${{ env.EB_APP_NAME }}" \
-            --environment-names "${{ env.EB_ENV_NAME }}" \
+            --application-name ${{ env.EB_APP_NAME }} \
+            --environment-names ${{ env.EB_ENV_NAME }} \
             --query 'Environments[?Status!=`Terminated`].EnvironmentName' \
             --output text | grep -q "${{ env.EB_ENV_NAME }}"; then
+              echo "Creating new environment..."
               aws elasticbeanstalk create-environment \
-                --application-name "${{ env.EB_APP_NAME }}" \
-                --environment-name "${{ env.EB_ENV_NAME }}" \
-                --solution-stack-name "64bit Amazon Linux 2 v3.6.2 running Go 1" \
-                --version-label "${{ github.sha }}"
+                --application-name ${{ env.EB_APP_NAME }} \
+                --environment-name ${{ env.EB_ENV_NAME }} \
+                --solution-stack-name "64bit Amazon Linux 2023 v4.3.3 running Go 1" \
+                --version-label ${{ env.VERSION_LABEL }} \
+                --option-settings \
+                  Namespace=aws:elasticbeanstalk:application:environment,OptionName=API_URL,Value=http://smart-energy-grid-env.us-east-1.elasticbeanstalk.com \
+                  Namespace=aws:elasticbeanstalk:application:environment,OptionName=PORT,Value=3000
+              echo "Waiting for environment creation..."
+              sleep 120
           fi
 
-      - name: Deploy EB environment to new version
+      # === CHANGED: Direct Environment Update ===
+      - name: Deploy Frontend to Elastic Beanstalk
         run: |
           aws elasticbeanstalk update-environment \
-            --environment-name "${{ env.EB_ENV_NAME }}" \
-            --version-label "${{ github.sha }}"
+            --application-name ${{ env.EB_APP_NAME }} \
+            --environment-name ${{ env.EB_ENV_NAME }} \
+            --version-label ${{ env.VERSION_LABEL }} \
+            --region ${{ env.AWS_REGION }}
 
       - name: Output Environment URL
         run: |
           URL=$(aws elasticbeanstalk describe-environments \
-            --application-name "${{ env.EB_APP_NAME }}" \
-            --environment-names "${{ env.EB_ENV_NAME }}" \
+            --application-name ${{ env.EB_APP_NAME }} \
+            --environment-names ${{ env.EB_ENV_NAME }} \
             --query 'Environments[0].CNAME' --output text)
-          echo "Frontend URL: http://${URL}"
+          echo "✅ Frontend URL: http://${URL}"

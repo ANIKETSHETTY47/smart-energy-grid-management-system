@@ -7,10 +7,9 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  EB_APPLICATION_NAME: smart-energy-grid            # must already exist
-  EB_ENVIRONMENT_NAME: smart-energy-grid-env        # must already exist
-  S3_BUCKET: smart-energy-grid-deployments          # change to your bucket
-  DEPLOY_PACKAGE: smart-energy-grid-${{ github.sha }}.zip
+  EB_APPLICATION_NAME: smart-energy-grid
+  EB_ENVIRONMENT_NAME: smart-energy-grid-env
+  S3_BUCKET: smart-energy-grid-deployments
 
 jobs:
   deploy:
@@ -50,52 +49,44 @@ jobs:
           fi
           cat Procfile
 
-      - name: Create Deployment Package
+      # === CHANGED: Simplified Zip Strategy ===
+      - name: Zip Backend Application
         run: |
           echo "Creating deployment package..."
-          zip -r "${{ env.DEPLOY_PACKAGE }}" \
+          zip -r smart-energy-grid-app.zip \
             bin/ \
             Procfile \
             .ebextensions/ \
             .platform/ \
             go.mod go.sum \
             internal/ pkg/ cmd/ \
-            -x "*.git*" "*.env*" "*node_modules*" "*.vscode*"
-          ls -lh "${{ env.DEPLOY_PACKAGE }}"
+            -x "*.git*" "*.env*" "*node_modules*" "*.vscode*" "*web/*" "*scripts/*" "*lambda-functions/*"
+          ls -lh smart-energy-grid-app.zip
 
-      - name: Ensure S3 bucket exists
+      # === CHANGED: Direct Upload to S3 ===
+      - name: Upload Backend to S3
         run: |
-          if ! aws s3api head-bucket --bucket "${{ env.S3_BUCKET }}" 2>/dev/null; then
-            echo "Bucket ${{ env.S3_BUCKET }} not found; creating in ${{ env.AWS_REGION }}..."
-            aws s3api create-bucket \
-              --bucket "${{ env.S3_BUCKET }}" \
-              --create-bucket-configuration LocationConstraint=${{ env.AWS_REGION }} \
-              --region ${{ env.AWS_REGION }}
-          fi
+          aws s3 cp smart-energy-grid-app.zip s3://${{ env.S3_BUCKET }}/smart-energy-grid-app.zip
 
-      - name: Upload to S3
-        run: |
-          aws s3 cp "${{ env.DEPLOY_PACKAGE }}" \
-            "s3://${{ env.S3_BUCKET }}/${{ env.DEPLOY_PACKAGE }}" \
-            --region ${{ env.AWS_REGION }}
-
+      # === CHANGED: Simplified Version Creation ===
       - name: Create EB Application Version
         run: |
-          VERSION_LABEL="v1-$(date +%Y%m%d%H%M%S)"
+          VERSION_LABEL=v1-$(date +%Y%m%d%H%M%S)
           echo "Using version: $VERSION_LABEL"
           aws elasticbeanstalk create-application-version \
-            --application-name "${{ env.EB_APPLICATION_NAME }}" \
-            --version-label "$VERSION_LABEL" \
-            --source-bundle S3Bucket=${{ env.S3_BUCKET }},S3Key=${{ env.DEPLOY_PACKAGE }} \
+            --application-name ${{ env.EB_APPLICATION_NAME }} \
+            --version-label $VERSION_LABEL \
+            --source-bundle S3Bucket=${{ env.S3_BUCKET }},S3Key=smart-energy-grid-app.zip \
             --region ${{ env.AWS_REGION }}
           echo "VERSION_LABEL=$VERSION_LABEL" >> $GITHUB_ENV
 
+      # === CHANGED: Direct Environment Update ===
       - name: Deploy to Elastic Beanstalk
         run: |
           aws elasticbeanstalk update-environment \
-            --application-name "${{ env.EB_APPLICATION_NAME }}" \
-            --environment-name "${{ env.EB_ENVIRONMENT_NAME }}" \
-            --version-label "${{ env.VERSION_LABEL }}" \
+            --application-name ${{ env.EB_APPLICATION_NAME }} \
+            --environment-name ${{ env.EB_ENVIRONMENT_NAME }} \
+            --version-label ${{ env.VERSION_LABEL }} \
             --region ${{ env.AWS_REGION }}
           echo "Deployment initiated!"
 
@@ -106,14 +97,14 @@ jobs:
           attempt=0
           while [ $attempt -lt $max_attempts ]; do
             status=$(aws elasticbeanstalk describe-environments \
-              --application-name "${{ env.EB_APPLICATION_NAME }}" \
-              --environment-names "${{ env.EB_ENVIRONMENT_NAME }}" \
-              --region "${{ env.AWS_REGION }}" \
+              --application-name ${{ env.EB_APPLICATION_NAME }} \
+              --environment-names ${{ env.EB_ENVIRONMENT_NAME }} \
+              --region ${{ env.AWS_REGION }} \
               --query 'Environments[0].Status' --output text)
             health=$(aws elasticbeanstalk describe-environments \
-              --application-name "${{ env.EB_APPLICATION_NAME }}" \
-              --environment-names "${{ env.EB_ENVIRONMENT_NAME }}" \
-              --region "${{ env.AWS_REGION }}" \
+              --application-name ${{ env.EB_APPLICATION_NAME }} \
+              --environment-names ${{ env.EB_ENVIRONMENT_NAME }} \
+              --region ${{ env.AWS_REGION }} \
               --query 'Environments[0].Health' --output text)
             echo "Status: $status, Health: $health"
             if [ "$status" = "Ready" ] && [ "$health" = "Green" ]; then
@@ -139,15 +130,22 @@ jobs:
         if: success()
         run: |
           CNAME=$(aws elasticbeanstalk describe-environments \
-            --application-name "${{ env.EB_APPLICATION_NAME }}" \
-            --environment-names "${{ env.EB_ENVIRONMENT_NAME }}" \
-            --region "${{ env.AWS_REGION }}" \
+            --application-name ${{ env.EB_APPLICATION_NAME }} \
+            --environment-names ${{ env.EB_ENVIRONMENT_NAME }} \
+            --region ${{ env.AWS_REGION }} \
             --query 'Environments[0].CNAME' --output text)
           echo "ENVIRONMENT_URL=http://$CNAME" >> $GITHUB_ENV
-          echo "URL: http://$CNAME"
+          echo "✅ Backend URL: http://$CNAME"
 
       - name: Smoke Test
         if: success()
         run: |
-          resp=$(curl -s -o /dev/null -w "%{http_code}" "$ENVIRONMENT_URL/health")
-          echo "Health status: $resp"
+          echo "Running health check..."
+          sleep 30  # Wait for environment to stabilize
+          resp=$(curl -s -o /dev/null -w "%{http_code}" "${{ env.ENVIRONMENT_URL }}/health")
+          echo "Health endpoint status: $resp"
+          if [ "$resp" = "200" ]; then
+            echo "✅ Health check passed"
+          else
+            echo "⚠️ Health check returned $resp (non-critical)"
+          fi
