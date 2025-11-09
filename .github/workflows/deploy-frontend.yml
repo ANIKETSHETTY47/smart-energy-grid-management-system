@@ -103,14 +103,16 @@ jobs:
           echo "Using platform: $PLATFORM_ARN"
           echo "PLATFORM_ARN=$PLATFORM_ARN" >> "$GITHUB_ENV"
 
-      - name: Check/Create EB Environment
+            - name: Check/Create EB Environment
         run: |
-          EXISTING_ENV=$(aws elasticbeanstalk describe-environments \
-            --application-name "${{ env.EB_APP_NAME }}" \
-            --environment-names "${{ env.EB_ENV_NAME }}" \
-            --query 'Environments[?Status!=`Terminated`].EnvironmentName' \
-            --output text \
-            --region "${{ env.AWS_REGION }}")
+          EXISTING_ENV=$(
+            aws elasticbeanstalk describe-environments \
+              --application-name "${{ env.EB_APP_NAME }}" \
+              --environment-names "${{ env.EB_ENV_NAME }}" \
+              --query 'Environments[?Status!=`Terminated`].EnvironmentName' \
+              --output text \
+              --region "${{ env.AWS_REGION }}"
+          )
 
           if [ -z "$EXISTING_ENV" ]; then
             echo "Creating new environment..."
@@ -124,15 +126,13 @@ jobs:
                 Namespace=aws:elasticbeanstalk:application:environment,OptionName=PORT,Value=3000 \
               --region "${{ env.AWS_REGION }}"
 
-            # (Optional) Wait for environment health to become Ready/Green before continuing
             aws elasticbeanstalk wait environment-exists \
               --application-name "${{ env.EB_APP_NAME }}" \
               --environment-names "${{ env.EB_ENV_NAME }}" \
               --region "${{ env.AWS_REGION }}"
           else
-            echo "Environment already exists: ${EXISTING_ENV}"
+            echo "Environment already exists: $EXISTING_ENV"
           fi
-
       - name: Deploy Frontend to Elastic Beanstalk
         run: |
           aws elasticbeanstalk update-environment \
