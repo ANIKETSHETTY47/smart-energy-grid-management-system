@@ -100,12 +100,19 @@ jobs:
             --version-label "$VERSION_LABEL" \
             --source-bundle S3Bucket="${{ env.S3_BUCKET }}",S3Key=frontend-app.zip \
             --region "${{ env.AWS_REGION }}"
-          echo "VERSION_LABEL=$VERSION_LABEL" >> "$GITHUB_ENV"
+          
+          # Write to GITHUB_ENV safely
+          {
+            echo "VERSION_LABEL=${VERSION_LABEL}"
+          } >> "$GITHUB_ENV"
+          
           echo "✅ Version created: $VERSION_LABEL"
 
       - name: Resolve EB Platform ARN (Go on AL2023)
         run: |
           set -e  # Exit on any error
+          set -o pipefail  # Exit on pipe failures
+          
           echo "Searching for Go platform on AL2023..."
           
           # First, list all available Go platforms for debugging
@@ -115,30 +122,40 @@ jobs:
             --query "PlatformSummaryList[?contains(PlatformBranchName, 'Go')].{Name:PlatformBranchName,Version:PlatformVersion,ARN:PlatformArn}" \
             --output table
           
-          # Try AL2023 Go platform first
+          # Try AL2023 Go platform first - capture to temp file to avoid any output issues
           echo ""
           echo "Attempting to find AL2023 Go platform..."
-          PLATFORM_ARN=$(aws elasticbeanstalk list-platform-versions \
+          
+          # Use temporary file to capture output cleanly
+          TEMP_FILE=$(mktemp)
+          aws elasticbeanstalk list-platform-versions \
             --region "${{ env.AWS_REGION }}" \
             --query "reverse(sort_by(PlatformSummaryList[?contains(PlatformBranchName, 'Go') && contains(PlatformBranchName, '2023')], &PlatformVersion))[0].PlatformArn" \
-            --output text)
-
+            --output text > "$TEMP_FILE" 2>&1
+          
+          PLATFORM_ARN=$(cat "$TEMP_FILE" | tr -d '\n' | tr -d '\r')
+          rm -f "$TEMP_FILE"
+          
           echo "AL2023 Query result: '$PLATFORM_ARN'"
 
           # Check if AL2023 platform was found
-          if [ -z "$PLATFORM_ARN" ] || [ "$PLATFORM_ARN" = "None" ]; then
+          if [ -z "$PLATFORM_ARN" ] || [ "$PLATFORM_ARN" = "None" ] || [ "$PLATFORM_ARN" = "null" ]; then
             echo "⚠️ AL2023 Go platform not found, trying any Go platform..."
             
-            PLATFORM_ARN=$(aws elasticbeanstalk list-platform-versions \
+            TEMP_FILE=$(mktemp)
+            aws elasticbeanstalk list-platform-versions \
               --region "${{ env.AWS_REGION }}" \
               --query "reverse(sort_by(PlatformSummaryList[?contains(PlatformBranchName, 'Go')], &PlatformVersion))[0].PlatformArn" \
-              --output text)
+              --output text > "$TEMP_FILE" 2>&1
+            
+            PLATFORM_ARN=$(cat "$TEMP_FILE" | tr -d '\n' | tr -d '\r')
+            rm -f "$TEMP_FILE"
             
             echo "Fallback Query result: '$PLATFORM_ARN'"
           fi
           
           # Final validation
-          if [ -z "$PLATFORM_ARN" ] || [ "$PLATFORM_ARN" = "None" ]; then
+          if [ -z "$PLATFORM_ARN" ] || [ "$PLATFORM_ARN" = "None" ] || [ "$PLATFORM_ARN" = "null" ]; then
             echo "❌ No Go platform found"
             exit 1
           fi
@@ -149,8 +166,13 @@ jobs:
             exit 1
           fi
           
+          # Write to GITHUB_ENV only after all validation passes
           echo "✅ Using platform: $PLATFORM_ARN"
-          echo "PLATFORM_ARN=$PLATFORM_ARN" >> "$GITHUB_ENV"
+          {
+            echo "PLATFORM_ARN=${PLATFORM_ARN}"
+          } >> "$GITHUB_ENV"
+          
+          echo "✅ Platform ARN set successfully"
 
       - name: Check/Create IAM Instance Profile
         run: |
