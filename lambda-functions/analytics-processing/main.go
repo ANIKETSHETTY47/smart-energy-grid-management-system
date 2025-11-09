@@ -9,6 +9,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/ANIKETSHETTY47/energy-grid-analytics-go/aggregator"
+	"github.com/ANIKETSHETTY47/energy-grid-analytics-go/converter"
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -45,19 +47,23 @@ type HourlyData struct {
 }
 
 type DailyAnalytics struct {
-	Date             string                `json:"date"`
-	ReadingCount     int                   `json:"reading_count"`
-	TotalConsumption float64               `json:"total_consumption"`
-	AveragePower     float64               `json:"average_power"`
-	PeakPower        float64               `json:"peak_power"`
-	MinPower         float64               `json:"min_power"`
-	AvgVoltage       float64               `json:"avg_voltage"`
-	VoltageVariance  float64               `json:"voltage_variance"`
-	AvgCurrent       float64               `json:"avg_current"`
-	PowerFactor      float64               `json:"power_factor"`
-	PeakHour         string                `json:"peak_hour"`
-	HourlyData       map[string]HourlyData `json:"hourly_data"`
-	CreatedAt        int64                 `dynamodbav:"createdAt" json:"created_at"`
+	Date                string                `json:"date"`
+	ReadingCount        int                   `json:"reading_count"`
+	TotalConsumption    float64               `json:"total_consumption"`
+	TotalConsumptionMWh float64               `json:"total_consumption_mwh"`
+	AveragePower        float64               `json:"average_power"`
+	PeakPower           float64               `json:"peak_power"`
+	MinPower            float64               `json:"min_power"`
+	MovingAverage       []float64             `json:"moving_average"`
+	EstimatedCost       float64               `json:"estimated_cost"`
+	CostBreakdown       map[string]float64    `json:"cost_breakdown"`
+	AvgVoltage          float64               `json:"avg_voltage"`
+	VoltageVariance     float64               `json:"voltage_variance"`
+	AvgCurrent          float64               `json:"avg_current"`
+	PowerFactor         float64               `json:"power_factor"`
+	PeakHour            string                `json:"peak_hour"`
+	HourlyData          map[string]HourlyData `json:"hourly_data"`
+	CreatedAt           int64                 `dynamodbav:"createdAt" json:"created_at"`
 }
 
 type LambdaEvent struct {
@@ -177,87 +183,140 @@ func getReadingsForDate(facilityID, date string) ([]Reading, error) {
 
 // YOUR ORIGINAL CONTRIBUTION: Calculate comprehensive daily analytics
 func calculateDailyAnalytics(readings []Reading, date string) DailyAnalytics {
+	// YOUR ORIGINAL CONTRIBUTION: Convert to library points
+	points := make([]aggregator.Point, len(readings))
+	for i, r := range readings {
+		points[i] = aggregator.Point{
+			Value:     r.PowerKW,
+			Timestamp: time.Unix(r.Timestamp, 0),
+		}
+	}
+
+	// YOUR ORIGINAL CONTRIBUTION: Use library aggregation
+	totalPower := aggregator.Sum(points)
+	avgPower := aggregator.Average(points)
+	// YOUR ORIGINAL CONTRIBUTION: Calculate moving average
+	movingAvg := aggregator.MovingAverage(points, 12) // 12-point moving average
+
+	// YOUR ORIGINAL CONTRIBUTION: Use converter for cost calculations
+	conv := &converter.EnergyConverter{}
+	totalConsumptionMWh := conv.KWhToMWh(totalPower)
+
+	// Calculate costs for different tiers
+	peakCost := conv.CalculateCost(totalPower*0.4, 0.20, "peak")       // 40% peak hours
+	offPeakCost := conv.CalculateCost(totalPower*0.6, 0.20, "offpeak") // 60% off-peak
+	totalCost := peakCost + offPeakCost
+
 	analytics := DailyAnalytics{
-		Date:         date,
-		ReadingCount: len(readings),
-		MinPower:     math.MaxFloat64,
-		HourlyData:   make(map[string]HourlyData),
-		CreatedAt:    time.Now().Unix(),
+		Date:                date,
+		ReadingCount:        len(readings),
+		TotalConsumption:    totalPower,
+		TotalConsumptionMWh: totalConsumptionMWh,
+		AveragePower:        avgPower,
+		PeakPower:           findMax(points),
+		MinPower:            findMin(points),
+		MovingAverage:       movingAvg,
+		EstimatedCost:       totalCost,
+		CostBreakdown: map[string]float64{
+			"peak":    peakCost,
+			"offpeak": offPeakCost,
+		},
+		HourlyData: calculateHourlyData(readings),
+		CreatedAt:  time.Now().Unix(),
 	}
 
-	var totalPower, totalVoltage, totalCurrent float64
+	// Calculate additional metrics
+	analytics.AvgVoltage = calculateAvgVoltage(readings)
+	analytics.AvgCurrent = calculateAvgCurrent(readings)
+	analytics.VoltageVariance = calculateVoltageVariance(readings, analytics.AvgVoltage)
 
-	// First pass: calculate totals and extremes
-	for _, r := range readings {
-		totalPower += r.PowerKW
-		totalVoltage += r.Voltage
-		totalCurrent += r.Current
-
-		if r.PowerKW > analytics.PeakPower {
-			analytics.PeakPower = r.PowerKW
-		}
-		if r.PowerKW < analytics.MinPower {
-			analytics.MinPower = r.PowerKW
-		}
-
-		// Aggregate by hour
-		t := time.Unix(r.Timestamp, 0)
-		hour := fmt.Sprintf("%02d", t.Hour())
-
-		hourData := analytics.HourlyData[hour]
-		hourData.Count++
-		hourData.TotalPower += r.PowerKW
-		if r.PowerKW > hourData.MaxPower {
-			hourData.MaxPower = r.PowerKW
-		}
-		analytics.HourlyData[hour] = hourData
-	}
-
-	// Calculate averages
-	count := float64(len(readings))
-	analytics.TotalConsumption = totalPower
-	analytics.AveragePower = totalPower / count
-	analytics.AvgVoltage = totalVoltage / count
-	analytics.AvgCurrent = totalCurrent / count
-
-	// Calculate voltage variance (standard deviation)
-	var varianceSum float64
-	for _, r := range readings {
-		varianceSum += math.Pow(r.Voltage-analytics.AvgVoltage, 2)
-	}
-	analytics.VoltageVariance = math.Sqrt(varianceSum / count)
-
-	// Calculate power factor (simplified)
+	// YOUR ORIGINAL CONTRIBUTION: Calculate efficiency using library
 	apparentPower := analytics.AvgVoltage * analytics.AvgCurrent
-	if apparentPower > 0 {
-		analytics.PowerFactor = analytics.AveragePower / apparentPower
-	}
-
-	// Calculate hourly averages and find peak hour
-	maxHourlyPower := 0.0
-	for hour, data := range analytics.HourlyData {
-		data.AvgPower = data.TotalPower / float64(data.Count)
-		analytics.HourlyData[hour] = data
-
-		if data.AvgPower > maxHourlyPower {
-			maxHourlyPower = data.AvgPower
-			analytics.PeakHour = hour
-		}
-	}
-
-	// Round values
-	analytics.TotalConsumption = math.Round(analytics.TotalConsumption*100) / 100
-	analytics.AveragePower = math.Round(analytics.AveragePower*100) / 100
-	analytics.PeakPower = math.Round(analytics.PeakPower*100) / 100
-	analytics.MinPower = math.Round(analytics.MinPower*100) / 100
-	analytics.AvgVoltage = math.Round(analytics.AvgVoltage*100) / 100
-	analytics.VoltageVariance = math.Round(analytics.VoltageVariance*100) / 100
-	analytics.AvgCurrent = math.Round(analytics.AvgCurrent*100) / 100
-	analytics.PowerFactor = math.Round(analytics.PowerFactor*1000) / 1000
+	analytics.PowerFactor = conv.CalculateEfficiency(apparentPower, avgPower)
 
 	return analytics
 }
 
+func findMax(points []aggregator.Point) float64 {
+	max := 0.0
+	for _, p := range points {
+		if p.Value > max {
+			max = p.Value
+		}
+	}
+	return max
+}
+
+func findMin(points []aggregator.Point) float64 {
+	min := math.MaxFloat64
+	for _, p := range points {
+		if p.Value < min {
+			min = p.Value
+		}
+	}
+	return min
+}
+
+func calculateHourlyData(readings []Reading) map[string]HourlyData {
+	hourlyMap := make(map[string]HourlyData)
+
+	for _, r := range readings {
+		hour := time.Unix(r.Timestamp, 0).Format("15")
+		data := hourlyMap[hour]
+		data.Count++
+		data.TotalPower += r.PowerKW
+		if r.PowerKW > data.MaxPower {
+			data.MaxPower = r.PowerKW
+		}
+		hourlyMap[hour] = data
+	}
+
+	// Calculate averages
+	for hour, data := range hourlyMap {
+		if data.Count > 0 {
+			data.AvgPower = data.TotalPower / float64(data.Count)
+			hourlyMap[hour] = data
+		}
+	}
+
+	return hourlyMap
+}
+
+func calculateAvgVoltage(readings []Reading) float64 {
+	if len(readings) == 0 {
+		return 0
+	}
+	sum := 0.0
+	for _, r := range readings {
+		sum += r.Voltage
+	}
+	return sum / float64(len(readings))
+}
+
+func calculateAvgCurrent(readings []Reading) float64 {
+	if len(readings) == 0 {
+		return 0
+	}
+	sum := 0.0
+	for _, r := range readings {
+		sum += r.Current
+	}
+	return sum / float64(len(readings))
+}
+
+func calculateVoltageVariance(readings []Reading, avgVoltage float64) float64 {
+	if len(readings) == 0 {
+		return 0
+	}
+	sum := 0.0
+	for _, r := range readings {
+		diff := r.Voltage - avgVoltage
+		sum += diff * diff
+	}
+	return math.Sqrt(sum / float64(len(readings)))
+}
+
+// YOUR ORIGINAL CONTRIBUTION: Store analytics summary in DynamoDB
 // YOUR ORIGINAL CONTRIBUTION: Store analytics summary in DynamoDB
 func storeAnalyticsSummary(facilityID string, analytics DailyAnalytics) error {
 	// Create a map that includes facilityId

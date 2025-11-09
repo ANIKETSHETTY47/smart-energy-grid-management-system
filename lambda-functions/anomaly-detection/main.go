@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/ANIKETSHETTY47/energy-grid-analytics-go/anomaly"
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -192,51 +193,42 @@ func getHistoricalReadings(facilityID, meterID string, hours int) ([]Reading, er
 
 // YOUR ORIGINAL CONTRIBUTION: Statistical anomaly detection using mean and standard deviation
 func detectAnomaly(current *Reading, historical []Reading) AnomalyResult {
-	if len(historical) < 3 {
-		return AnomalyResult{
-			IsAnomaly: false,
-			Reason:    "Insufficient historical data",
+	// YOUR ORIGINAL CONTRIBUTION: Use library's anomaly detector
+	detector := &anomaly.AnomalyDetector{
+		Threshold:  2.0,
+		WindowSize: 24,
+	}
+
+	// Convert to library's Reading format
+	libReadings := make([]anomaly.Reading, len(historical)+1)
+	for i, r := range historical {
+		libReadings[i] = anomaly.Reading{
+			Consumption: r.PowerKW,
+			Timestamp:   r.Timestamp,
 		}
 	}
-
-	// Calculate statistics
-	var sum float64
-	powers := make([]float64, len(historical))
-	for i, r := range historical {
-		powers[i] = r.PowerKW
-		sum += r.PowerKW
+	// Add current reading
+	libReadings[len(historical)] = anomaly.Reading{
+		Consumption: current.PowerKW,
+		Timestamp:   current.Timestamp,
 	}
 
-	mean := sum / float64(len(historical))
+	// YOUR ORIGINAL CONTRIBUTION: Detect spikes using library
+	spikes := detector.DetectSpikes(libReadings)
 
-	// Calculate standard deviation
-	var varianceSum float64
-	for _, p := range powers {
-		varianceSum += math.Pow(p-mean, 2)
-	}
-	variance := varianceSum / float64(len(historical))
-	stdDev := math.Sqrt(variance)
+	// YOUR ORIGINAL CONTRIBUTION: Detect outliers using IQR method
+	outliers := detector.DetectOutliers(libReadings)
 
-	// Check if anomaly
-	threshold := mean + (stdDev * 2) // 2 standard deviations
-	deviation := math.Abs(current.PowerKW - mean)
-	deviationPercent := (deviation / mean) * 100
+	// Calculate statistics for result
+	mean := calculateMean(historical)
+	stdDev := calculateStdDev(historical, mean)
 
-	thresholdMultiplier := 1.5 // 50% above average
-	isAnomaly := current.PowerKW > threshold || current.PowerKW > (mean*thresholdMultiplier)
-
+	isAnomaly := len(spikes) > 0 || len(outliers) > 0
 	severity := "low"
-	if deviationPercent > 100 {
+	if current.PowerKW > mean*2 {
 		severity = "critical"
-	} else if deviationPercent > 50 {
+	} else if current.PowerKW > mean*1.5 {
 		severity = "high"
-	} else if deviationPercent > 25 {
-		severity = "medium"
-	}
-
-	reason := "Normal"
-	if isAnomaly {
-		reason = fmt.Sprintf("Power consumption %.1f%% above average", deviationPercent)
 	}
 
 	return AnomalyResult{
@@ -244,11 +236,27 @@ func detectAnomaly(current *Reading, historical []Reading) AnomalyResult {
 		CurrentPower:     current.PowerKW,
 		Mean:             mean,
 		StdDev:           stdDev,
-		Threshold:        threshold,
-		DeviationPercent: deviationPercent,
+		Threshold:        mean + (stdDev * detector.Threshold),
+		DeviationPercent: ((current.PowerKW - mean) / mean) * 100,
 		Severity:         severity,
-		Reason:           reason,
+		Reason:           fmt.Sprintf("Detected using %d-point window analysis", detector.WindowSize),
 	}
+}
+
+func calculateMean(readings []Reading) float64 {
+	sum := 0.0
+	for _, r := range readings {
+		sum += r.PowerKW
+	}
+	return sum / float64(len(readings))
+}
+
+func calculateStdDev(readings []Reading, mean float64) float64 {
+	variance := 0.0
+	for _, r := range readings {
+		variance += math.Pow(r.PowerKW-mean, 2)
+	}
+	return math.Sqrt(variance / float64(len(readings)))
 }
 
 // YOUR ORIGINAL CONTRIBUTION: Store alert in DynamoDB for tracking

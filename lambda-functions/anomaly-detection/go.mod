@@ -12,6 +12,7 @@ require (
 )
 
 require (
+	github.com/ANIKETSHETTY47/energy-grid-analytics-go v1.0.0
 	github.com/aws/aws-sdk-go-v2/credentials v1.18.21 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.13 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.13 // indirect

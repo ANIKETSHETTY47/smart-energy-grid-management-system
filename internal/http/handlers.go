@@ -31,7 +31,17 @@ func Register(app *fiber.App, svcs *service.Services) {
 	g.Get("health", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "ok", "time": time.Now().UTC()})
 	})
+	// NEW: Predictive maintenance endpoint
+	g.Get("equipment/:id/maintenance", func(c *fiber.Ctx) error {
+		equipmentID := c.Params("id")
 
+		prediction, err := svcs.Maintenance.PredictMaintenanceNeeds(equipmentID)
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+		}
+
+		return c.JSON(prediction)
+	})
 	// Existing handlers
 	g.Get("facilities", func(c *fiber.Ctx) error {
 		items, err := svcs.Repos.ListFacilities()

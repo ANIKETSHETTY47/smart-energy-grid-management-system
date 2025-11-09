@@ -6,6 +6,9 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/ANIKETSHETTY47/energy-grid-analytics-go/aggregator"
+	"github.com/ANIKETSHETTY47/energy-grid-analytics-go/converter"
+
 	"github.com/ANIKETSHETTY47/smart-energy-grid-management-system/internal/cloud"
 	"github.com/ANIKETSHETTY47/smart-energy-grid-management-system/internal/config"
 	"github.com/ANIKETSHETTY47/smart-energy-grid-management-system/internal/domain"
@@ -14,10 +17,11 @@ import (
 )
 
 type Services struct {
-	Repos     *repository.Repos
-	Readings  *ReadingService
-	Analytics *AnalyticsService
-	Alerts    *AlertService
+	Repos       *repository.Repos
+	Readings    *ReadingService
+	Analytics   *AnalyticsService
+	Alerts      *AlertService
+	Maintenance *MaintenanceService // NEW
 
 	// Cloud clients
 	DynamoDB *cloud.DynamoDBClient
@@ -83,7 +87,11 @@ func New(db *sqlx.DB) (*Services, error) {
 		sns:      svcs.SNS,
 		useCloud: svcs.UseCloud,
 	}
-
+	svcs.Maintenance = &MaintenanceService{
+		dynamoDB: svcs.DynamoDB,
+		sns:      svcs.SNS,
+		useCloud: svcs.UseCloud,
+	}
 	return svcs, nil
 }
 
@@ -178,16 +186,17 @@ type AnalyticsService struct {
 
 // DailySummary represents daily energy consumption summary
 type DailySummary struct {
-	Date             time.Time `json:"date"`
-	TotalConsumption float64   `json:"total_consumption"`
-	PeakPower        float64   `json:"peak_power"`
-	AveragePower     float64   `json:"average_power"`
-	ReadingCount     int       `json:"reading_count"`
+	Date                time.Time `json:"date"`
+	TotalConsumption    float64   `json:"total_consumption"`
+	TotalConsumptionMWh float64   `json:"total_consumption_mwh"`
+	PeakPower           float64   `json:"peak_power"`
+	AveragePower        float64   `json:"average_power"`
+	Efficiency          float64   `json:"efficiency"`
+	ReadingCount        int       `json:"reading_count"`
 }
 
 // GetDailySummary calculates daily consumption summary
 func (s *AnalyticsService) GetDailySummary(facilityID string, date time.Time) (*DailySummary, error) {
-	// Get 24 hours of readings
 	readings, err := s.getReadingsForDate(facilityID, date)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get readings: %w", err)
@@ -197,25 +206,48 @@ func (s *AnalyticsService) GetDailySummary(facilityID string, date time.Time) (*
 		return &DailySummary{Date: date}, nil
 	}
 
-	summary := &DailySummary{
-		Date:         date,
-		ReadingCount: len(readings),
-	}
-
-	var totalPower float64
-	for _, r := range readings {
-		totalPower += r.PowerKW
-		if r.PowerKW > summary.PeakPower {
-			summary.PeakPower = r.PowerKW
+	// YOUR ORIGINAL CONTRIBUTION: Convert readings to aggregator points
+	points := make([]aggregator.Point, len(readings))
+	for i, r := range readings {
+		points[i] = aggregator.Point{
+			Value:     r.PowerKW,
+			Timestamp: r.Timestamp,
 		}
 	}
 
-	summary.TotalConsumption = totalPower
-	summary.AveragePower = totalPower / float64(len(readings))
+	// YOUR ORIGINAL CONTRIBUTION: Use library's aggregation functions
+	totalConsumption := aggregator.Sum(points)
+	averagePower := aggregator.Average(points)
+
+	// YOUR ORIGINAL CONTRIBUTION: Use converter for unit conversions
+	conv := &converter.EnergyConverter{}
+	totalConsumptionMWh := conv.KWhToMWh(totalConsumption)
+
+	// YOUR ORIGINAL CONTRIBUTION: Calculate efficiency
+	efficiency := conv.CalculateEfficiency(totalConsumption, averagePower*float64(len(readings)))
+
+	summary := &DailySummary{
+		Date:                date,
+		ReadingCount:        len(readings),
+		TotalConsumption:    totalConsumption,
+		TotalConsumptionMWh: totalConsumptionMWh,
+		AveragePower:        averagePower,
+		Efficiency:          efficiency,
+		PeakPower:           s.findPeakPower(points),
+	}
 
 	return summary, nil
 }
 
+func (s *AnalyticsService) findPeakPower(points []aggregator.Point) float64 {
+	peak := 0.0
+	for _, p := range points {
+		if p.Value > peak {
+			peak = p.Value
+		}
+	}
+	return peak
+}
 func (s *AnalyticsService) getReadingsForDate(facilityID string, date time.Time) ([]domain.Reading, error) {
 	if s.useCloud && s.dynamoDB != nil {
 		return s.dynamoDB.GetRecentReadings(facilityID, 24*time.Hour)

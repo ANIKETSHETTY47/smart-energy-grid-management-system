@@ -19,6 +19,7 @@ require (
 )
 
 require (
+	github.com/ANIKETSHETTY47/energy-grid-analytics-go v1.0.0 // indirect
 	github.com/andybalholm/brotli v1.1.0 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.3 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.18.21 // indirect
