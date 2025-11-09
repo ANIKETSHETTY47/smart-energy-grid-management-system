@@ -216,13 +216,21 @@ body {
   color: var(--danger);
 }
 
-/* Chart Container */
+/* =========================
+   CHARTS (Unified Rules)
+   ========================= */
+
+/* Full-width container controlled by fixed height (lengthwise) */
 .chart-container {
+  position: relative;
   background: var(--white);
   padding: 1.5rem;
   border-radius: 16px;
   box-shadow: 0 1px 3px rgba(0,0,0,.1);
   margin-bottom: 2rem;
+  width: 100%;         /* cover entire page width */
+  overflow: hidden;    /* prevent overflow */
+  height: 420px;       /* main chart default height (tweak 320–560px) */
 }
 
 .chart-container h2 {
@@ -231,6 +239,21 @@ body {
   font-weight: 700;
 }
 
+/* Canvas should exactly fill the container height/width */
+.chart-container canvas {
+  display: block;
+  width: 100% !important;
+  height: calc(100% - 2.25rem) !important; /* leave space for h2 */
+  max-width: none !important;
+  box-sizing: border-box;
+}
+
+/* Variants for different chart sections */
+.chart-container--sm { height: 320px; }
+.chart-container--md { height: 360px; }
+.chart-container--lg { height: 500px; }
+
+/* Chart controls inline with title */
 .chart-controls {
   display: flex;
   gap: 0.5rem;
@@ -632,3 +655,4 @@ body {
     transform: translateY(0);
   }
 }
+/* End of CSS */

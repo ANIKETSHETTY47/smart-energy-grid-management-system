@@ -16,7 +16,7 @@
     <div class="stat-card">
       <div class="stat-content">
         <h3>Total Equipment</h3>
-        <p class="stat-value">{{len .Equipment}}</p>
+        <p class="stat-value">{{if .Equipment}}{{len .Equipment}}{{else}}0{{end}}</p>
       </div>
     </div>
     <div class="stat-card">
@@ -81,19 +81,20 @@
     {{end}}
   </div>
 
-  <div class="chart-container" style="margin-top: 2rem;">
+  <!-- Fixed-height, full-width chart -->
+  <div class="chart-container chart-container--md" style="margin-top: 2rem;">
     <h2>Equipment Health Trends</h2>
-    <canvas id="healthTrendChart" height="80"></canvas>
+    <canvas id="healthTrendChart"></canvas>
   </div>
 </div>
 
+<!-- Safer JSON injection -->
 <script id="equipmentData" type="application/json">
 {{toJSON .Equipment}}
 </script>
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
-  // Inject the array/null directly as a JS value
   const dataScript = document.getElementById('equipmentData');
   const equipmentData = dataScript ? JSON.parse(dataScript.textContent || '[]') : [];
 
@@ -118,7 +119,6 @@ document.addEventListener('DOMContentLoaded', function() {
   document.getElementById('avgHealth').textContent =
     (list.length ? (totalHealth / list.length).toFixed(1) : '0.0') + '%';
 
-  // If you want the chart even with no data, call it with an empty list
   initHealthTrendChart(list);
 });
 
@@ -132,7 +132,6 @@ function initHealthTrendChart(equipment) {
     days.push(d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
   }
 
-  // If no equipment, show a placeholder series so the chart renders
   const series = equipment.length ? equipment : [{ id: '—', type: 'No Data', health: 0 }];
 
   const palette = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
@@ -154,12 +153,19 @@ function initHealthTrendChart(equipment) {
     type: 'line',
     data: { labels: days, datasets },
     options: {
-      responsive: true,
-      maintainAspectRatio: false,
+      responsive: true,             // width follows container
+      maintainAspectRatio: false,   // height follows CSS
+      devicePixelRatio: Math.min(window.devicePixelRatio || 1, 1.75),
       plugins: { legend: { position: 'top' } },
-      scales: { y: { min: 0, max: 100, title: { display: true, text: 'Health Score (%)' } } }
+      scales: {
+        y: { min: 0, max: 100, title: { display: true, text: 'Health Score (%)' } }
+      }
     }
   });
+}
+
+function scheduleMaintenance(equipmentId) {
+  alert('Scheduling maintenance for equipment: ' + equipmentId);
 }
 </script>
 
