@@ -103,7 +103,7 @@ jobs:
           echo "Using platform: $PLATFORM_ARN"
           echo "PLATFORM_ARN=$PLATFORM_ARN" >> "$GITHUB_ENV"
 
-            - name: Check/Create EB Environment
+      - name: Check/Create EB Environment
         run: |
           EXISTING_ENV=$(
             aws elasticbeanstalk describe-environments \
@@ -131,8 +131,9 @@ jobs:
               --environment-names "${{ env.EB_ENV_NAME }}" \
               --region "${{ env.AWS_REGION }}"
           else
-            echo "Environment already exists: $EXISTING_ENV"
+            echo "Environment already exists: ${EXISTING_ENV}"
           fi
+
       - name: Deploy Frontend to Elastic Beanstalk
         run: |
           aws elasticbeanstalk update-environment \
