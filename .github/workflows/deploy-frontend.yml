@@ -92,10 +92,9 @@ jobs:
       # ✅ FIXED: Use JSON for --filters to avoid AWS CLI parse error
       - name: Resolve EB Platform ARN (Go on AL2023)
         run: |
-          FILTERS='[{"Type":"PlatformName","Operator":"=","Value":"Go 1 running on 64bit Amazon Linux 2023"}]'
           PLATFORM_ARN=$(aws elasticbeanstalk list-platform-versions \
             --region "${{ env.AWS_REGION }}" \
-            --filters "$FILTERS" \
+            --filters 'Type=PlatformName,Operator==,Values="Go 1 running on 64bit Amazon Linux 2023"' \
             --query 'sort_by(PlatformSummaryList,&PlatformVersion)[-1].PlatformArn' \
             --output text)
 
