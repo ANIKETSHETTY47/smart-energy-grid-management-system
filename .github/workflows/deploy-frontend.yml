@@ -98,9 +98,9 @@ jobs:
           PLATFORM_ARN=$(aws elasticbeanstalk list-platform-versions \
             --region "${{ env.AWS_REGION }}" \
             --query "reverse(sort_by(PlatformSummaryList[?contains(PlatformBranchName, 'Go') && contains(PlatformBranchName, '2023')], &PlatformVersion))[0].PlatformArn" \
-            --output text)
+            --output text 2>&1 || echo "")
 
-          if [ -z "$PLATFORM_ARN" ] || [ "$PLATFORM_ARN" = "None" ]; then
+          if [ -z "$PLATFORM_ARN" ] || [ "$PLATFORM_ARN" = "None" ] || [ "$PLATFORM_ARN" = "null" ]; then
             echo "❌ Failed to resolve AL2023 Go platform ARN" >&2
             echo "Available Go platforms:"
             aws elasticbeanstalk list-platform-versions \
