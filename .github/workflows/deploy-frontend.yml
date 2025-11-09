@@ -61,90 +61,105 @@ jobs:
 
       - name: Ensure S3 bucket exists
         run: |
-          if ! aws s3 ls "s3://${{ env.S3_BUCKET }}" >/dev/null 2>&1; then
+          if ! aws s3 ls "s3://${{ env.S3_BUCKET }}" 2>&1 | grep -q ""; then
+            echo "Creating S3 bucket..."
             aws s3 mb "s3://${{ env.S3_BUCKET }}" --region "${{ env.AWS_REGION }}"
+          else
+            echo "✅ S3 bucket exists"
           fi
 
       - name: Upload Frontend to S3
         working-directory: web/energy-dashboard
         run: |
           aws s3 cp frontend-app.zip "s3://${{ env.S3_BUCKET }}/frontend-app.zip" --region "${{ env.AWS_REGION }}"
+          echo "✅ Uploaded to S3"
 
       - name: Create EB Application (if needed)
         run: |
-          if [ "$(aws elasticbeanstalk describe-applications \
-                --application-names "${{ env.EB_APP_NAME }}" \
-                --query 'length(Applications)' \
-                --output text 2>/dev/null)" = "0" ]; then
+          APP_COUNT=$(aws elasticbeanstalk describe-applications \
+            --application-names "${{ env.EB_APP_NAME }}" \
+            --query 'length(Applications)' \
+            --output text 2>/dev/null || echo "0")
+          
+          if [ "$APP_COUNT" = "0" ]; then
+            echo "Creating EB application..."
             aws elasticbeanstalk create-application \
               --application-name "${{ env.EB_APP_NAME }}" \
               --region "${{ env.AWS_REGION }}"
+            echo "✅ Application created"
+          else
+            echo "✅ Application already exists"
           fi
 
       - name: Create EB Application Version
         run: |
           VERSION_LABEL="v1-$(date +%Y%m%d%H%M%S)"
-          echo "Using version: $VERSION_LABEL"
+          echo "Creating version: $VERSION_LABEL"
           aws elasticbeanstalk create-application-version \
             --application-name "${{ env.EB_APP_NAME }}" \
             --version-label "$VERSION_LABEL" \
             --source-bundle S3Bucket="${{ env.S3_BUCKET }}",S3Key=frontend-app.zip \
             --region "${{ env.AWS_REGION }}"
           echo "VERSION_LABEL=$VERSION_LABEL" >> "$GITHUB_ENV"
+          echo "✅ Version created: $VERSION_LABEL"
 
       - name: Resolve EB Platform ARN (Go on AL2023)
         run: |
+          set -e  # Exit on any error
           echo "Searching for Go platform on AL2023..."
           
-          # First, list all available platforms to see what we have
+          # First, list all available Go platforms for debugging
+          echo "Available Go platforms:"
           aws elasticbeanstalk list-platform-versions \
             --region "${{ env.AWS_REGION }}" \
             --query "PlatformSummaryList[?contains(PlatformBranchName, 'Go')].{Name:PlatformBranchName,Version:PlatformVersion,ARN:PlatformArn}" \
             --output table
           
-          # Try to find the latest Go platform on AL2023
+          # Try AL2023 Go platform first
+          echo ""
+          echo "Attempting to find AL2023 Go platform..."
           PLATFORM_ARN=$(aws elasticbeanstalk list-platform-versions \
             --region "${{ env.AWS_REGION }}" \
             --query "reverse(sort_by(PlatformSummaryList[?contains(PlatformBranchName, 'Go') && contains(PlatformBranchName, '2023')], &PlatformVersion))[0].PlatformArn" \
-            --output text 2>&1 || echo "")
+            --output text)
 
           echo "AL2023 Query result: '$PLATFORM_ARN'"
 
-          # Validate the result - check for empty, "None", "null", or errors
-          if [ -z "$PLATFORM_ARN" ] || [ "$PLATFORM_ARN" = "None" ] || [ "$PLATFORM_ARN" = "null" ] || [[ "$PLATFORM_ARN" == *"Error"* ]] || [[ ! "$PLATFORM_ARN" == arn:* ]]; then
+          # Check if AL2023 platform was found
+          if [ -z "$PLATFORM_ARN" ] || [ "$PLATFORM_ARN" = "None" ]; then
             echo "⚠️ AL2023 Go platform not found, trying any Go platform..."
             
-            # Fallback to any Go platform
             PLATFORM_ARN=$(aws elasticbeanstalk list-platform-versions \
               --region "${{ env.AWS_REGION }}" \
               --query "reverse(sort_by(PlatformSummaryList[?contains(PlatformBranchName, 'Go')], &PlatformVersion))[0].PlatformArn" \
-              --output text 2>&1 || echo "")
+              --output text)
             
             echo "Fallback Query result: '$PLATFORM_ARN'"
-            
-            # Validate fallback result
-            if [ -z "$PLATFORM_ARN" ] || [ "$PLATFORM_ARN" = "None" ] || [ "$PLATFORM_ARN" = "null" ] || [[ "$PLATFORM_ARN" == *"Error"* ]] || [[ ! "$PLATFORM_ARN" == arn:* ]]; then
-              echo "❌ No valid Go platform ARN found"
-              echo "This typically means:"
-              echo "1. No Go platforms are available in this region"
-              echo "2. Or there's an issue with AWS API permissions"
-              exit 1
-            fi
           fi
           
-          # Double-check we have a valid ARN before writing to GITHUB_ENV
-          if [[ "$PLATFORM_ARN" == arn:aws:elasticbeanstalk:* ]]; then
-            echo "✅ Using platform: $PLATFORM_ARN"
-            echo "PLATFORM_ARN=$PLATFORM_ARN" >> "$GITHUB_ENV"
-          else
-            echo "❌ Invalid platform ARN format: $PLATFORM_ARN"
+          # Final validation
+          if [ -z "$PLATFORM_ARN" ] || [ "$PLATFORM_ARN" = "None" ]; then
+            echo "❌ No Go platform found"
             exit 1
           fi
+          
+          # Ensure it's a valid ARN format
+          if [[ ! "$PLATFORM_ARN" =~ ^arn:aws:elasticbeanstalk: ]]; then
+            echo "❌ Invalid ARN format: '$PLATFORM_ARN'"
+            exit 1
+          fi
+          
+          echo "✅ Using platform: $PLATFORM_ARN"
+          echo "PLATFORM_ARN=$PLATFORM_ARN" >> "$GITHUB_ENV"
 
       - name: Check/Create IAM Instance Profile
         run: |
-          # Check if instance profile exists
-          if ! aws iam get-instance-profile --instance-profile-name "${{ env.INSTANCE_PROFILE }}" >/dev/null 2>&1; then
+          set -e
+          echo "Checking IAM Instance Profile..."
+          
+          if aws iam get-instance-profile --instance-profile-name "${{ env.INSTANCE_PROFILE }}" >/dev/null 2>&1; then
+            echo "✅ Instance profile already exists"
+          else
             echo "Creating IAM role and instance profile..."
             
             # Create the role
@@ -157,39 +172,43 @@ jobs:
                   "Principal": {"Service": "ec2.amazonaws.com"},
                   "Action": "sts:AssumeRole"
                 }]
-              }' || true
+              }' 2>/dev/null || echo "Role may already exist"
             
             # Attach managed policies
             aws iam attach-role-policy \
               --role-name "${{ env.INSTANCE_PROFILE }}" \
-              --policy-arn arn:aws:iam::aws:policy/AWSElasticBeanstalkWebTier || true
+              --policy-arn arn:aws:iam::aws:policy/AWSElasticBeanstalkWebTier 2>/dev/null || true
             
             aws iam attach-role-policy \
               --role-name "${{ env.INSTANCE_PROFILE }}" \
-              --policy-arn arn:aws:iam::aws:policy/AWSElasticBeanstalkWorkerTier || true
+              --policy-arn arn:aws:iam::aws:policy/AWSElasticBeanstalkWorkerTier 2>/dev/null || true
             
             aws iam attach-role-policy \
               --role-name "${{ env.INSTANCE_PROFILE }}" \
-              --policy-arn arn:aws:iam::aws:policy/AWSElasticBeanstalkMulticontainerDocker || true
+              --policy-arn arn:aws:iam::aws:policy/AWSElasticBeanstalkMulticontainerDocker 2>/dev/null || true
             
             # Create instance profile
             aws iam create-instance-profile \
-              --instance-profile-name "${{ env.INSTANCE_PROFILE }}" || true
+              --instance-profile-name "${{ env.INSTANCE_PROFILE }}" 2>/dev/null || echo "Instance profile may already exist"
             
             # Add role to instance profile
             aws iam add-role-to-instance-profile \
               --instance-profile-name "${{ env.INSTANCE_PROFILE }}" \
-              --role-name "${{ env.INSTANCE_PROFILE }}" || true
+              --role-name "${{ env.INSTANCE_PROFILE }}" 2>/dev/null || true
             
             echo "Waiting for IAM propagation..."
             sleep 10
-          else
-            echo "✅ Instance profile already exists"
+            echo "✅ Instance profile created"
           fi
 
       - name: Check/Create Service Role
         run: |
-          if ! aws iam get-role --role-name "${{ env.SERVICE_ROLE }}" >/dev/null 2>&1; then
+          set -e
+          echo "Checking Service Role..."
+          
+          if aws iam get-role --role-name "${{ env.SERVICE_ROLE }}" >/dev/null 2>&1; then
+            echo "✅ Service role already exists"
+          else
             echo "Creating service role..."
             
             aws iam create-role \
@@ -206,37 +225,45 @@ jobs:
                     }
                   }
                 }]
-              }' || true
+              }' 2>/dev/null || echo "Role may already exist"
             
             aws iam attach-role-policy \
               --role-name "${{ env.SERVICE_ROLE }}" \
-              --policy-arn arn:aws:iam::aws:policy/service-role/AWSElasticBeanstalkEnhancedHealth || true
+              --policy-arn arn:aws:iam::aws:policy/service-role/AWSElasticBeanstalkEnhancedHealth 2>/dev/null || true
             
             aws iam attach-role-policy \
               --role-name "${{ env.SERVICE_ROLE }}" \
-              --policy-arn arn:aws:iam::aws:policy/AWSElasticBeanstalkManagedUpdatesCustomerRolePolicy || true
+              --policy-arn arn:aws:iam::aws:policy/AWSElasticBeanstalkManagedUpdatesCustomerRolePolicy 2>/dev/null || true
             
+            echo "Waiting for IAM propagation..."
             sleep 10
-          else
-            echo "✅ Service role already exists"
+            echo "✅ Service role created"
           fi
 
       - name: Check/Create EB Environment
         run: |
-          EXISTING_ENV=$(
-            aws elasticbeanstalk describe-environments \
-              --application-name "${{ env.EB_APP_NAME }}" \
-              --environment-names "${{ env.EB_ENV_NAME }}" \
-              --query 'Environments[?Status!=`Terminated`].EnvironmentName' \
-              --output text \
-              --region "${{ env.AWS_REGION }}"
-          )
+          set -e
+          echo "Checking if environment exists..."
+          
+          EXISTING_ENV=$(aws elasticbeanstalk describe-environments \
+            --application-name "${{ env.EB_APP_NAME }}" \
+            --environment-names "${{ env.EB_ENV_NAME }}" \
+            --query 'Environments[?Status!=`Terminated`].EnvironmentName' \
+            --output text \
+            --region "${{ env.AWS_REGION }}" 2>/dev/null || echo "")
 
           if [ -z "$EXISTING_ENV" ]; then
-            echo "Creating new environment with IAM roles..."
+            echo "Creating new environment..."
             
             # Get account ID for ARN construction
             ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+            
+            if [ -z "$ACCOUNT_ID" ] || [ "$ACCOUNT_ID" = "None" ]; then
+              echo "❌ Failed to get AWS Account ID"
+              exit 1
+            fi
+            
+            echo "Using Account ID: $ACCOUNT_ID"
             
             aws elasticbeanstalk create-environment \
               --application-name "${{ env.EB_APP_NAME }}" \
@@ -250,25 +277,31 @@ jobs:
                 Namespace=aws:elasticbeanstalk:application:environment,OptionName=PORT,Value=3000 \
               --region "${{ env.AWS_REGION }}"
 
-            echo "Waiting for environment to be created..."
+            echo "Waiting for environment to exist..."
             aws elasticbeanstalk wait environment-exists \
               --application-name "${{ env.EB_APP_NAME }}" \
               --environment-names "${{ env.EB_ENV_NAME }}" \
               --region "${{ env.AWS_REGION }}"
+            
+            echo "✅ Environment created"
           else
             echo "✅ Environment already exists: ${EXISTING_ENV}"
           fi
 
       - name: Deploy Frontend to Elastic Beanstalk
         run: |
+          set -e
+          echo "Deploying version ${{ env.VERSION_LABEL }} to environment..."
           aws elasticbeanstalk update-environment \
             --application-name "${{ env.EB_APP_NAME }}" \
             --environment-name "${{ env.EB_ENV_NAME }}" \
             --version-label "${{ env.VERSION_LABEL }}" \
             --region "${{ env.AWS_REGION }}"
+          echo "✅ Deployment initiated"
 
       - name: Wait for Deployment
         run: |
+          set -e
           echo "Waiting for environment to be ready..."
           max_attempts=30
           attempt=0
@@ -278,13 +311,13 @@ jobs:
               --application-name "${{ env.EB_APP_NAME }}" \
               --environment-names "${{ env.EB_ENV_NAME }}" \
               --region "${{ env.AWS_REGION }}" \
-              --query 'Environments[0].Status' --output text)
+              --query 'Environments[0].Status' --output text 2>/dev/null || echo "Unknown")
             
             health=$(aws elasticbeanstalk describe-environments \
               --application-name "${{ env.EB_APP_NAME }}" \
               --environment-names "${{ env.EB_ENV_NAME }}" \
               --region "${{ env.AWS_REGION }}" \
-              --query 'Environments[0].Health' --output text)
+              --query 'Environments[0].Health' --output text 2>/dev/null || echo "Unknown")
             
             echo "Status: $status, Health: $health"
             
@@ -300,6 +333,7 @@ jobs:
             
             if [ "$health" = "Red" ]; then
               echo "❌ Deployment failed - Environment health is Red"
+              echo ""
               echo "Recent events:"
               aws elasticbeanstalk describe-events \
                 --application-name "${{ env.EB_APP_NAME }}" \
@@ -324,5 +358,10 @@ jobs:
             --application-name "${{ env.EB_APP_NAME }}" \
             --environment-names "${{ env.EB_ENV_NAME }}" \
             --query 'Environments[0].CNAME' --output text \
-            --region "${{ env.AWS_REGION }}")
-          echo "✅ Frontend URL: http://${URL}"
+            --region "${{ env.AWS_REGION }}" 2>/dev/null || echo "")
+          
+          if [ -z "$URL" ] || [ "$URL" = "None" ]; then
+            echo "⚠️ Could not retrieve environment URL"
+          else
+            echo "✅ Frontend URL: http://${URL}"
+          fi
