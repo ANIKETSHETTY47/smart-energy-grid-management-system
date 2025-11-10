@@ -37,41 +37,41 @@ jobs:
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Initialize Elastic Beanstalk
-        run: |
-          eb --version
-          
-          mkdir -p .elasticbeanstalk
-          
-          cat > .elasticbeanstalk/config.yml << 'EOF'
-branch-defaults:
-  main:
-    environment: smart-energy-grid-env
-global:
-  application_name: smart-energy-grid
-  default_region: us-east-1
-  platform: Go 1 running on 64bit Amazon Linux 2023
-  sc: git
-  workspace_type: Application
-EOF
-          
-          echo "EB Configuration created:"
-          cat .elasticbeanstalk/config.yml
-          
-          cat > .ebignore << 'EOF'
-.git
-.github
-*.md
-.env*
-node_modules
-.vscode
-.idea
-*.log
-.elasticbeanstalk/*
-!.elasticbeanstalk/*.cfg.yml
-!.elasticbeanstalk/*.global.yml
-EOF
-          
-          echo "Created .ebignore"
+  run: |
+    eb --version
+    
+    mkdir -p .elasticbeanstalk
+    
+    cat > .elasticbeanstalk/config.yml << 'EOF'
+    branch-defaults:
+      main:
+        environment: smart-energy-grid-env
+    global:
+      application_name: smart-energy-grid
+      default_region: us-east-1
+      platform: Go 1 running on 64bit Amazon Linux 2023
+      sc: git
+      workspace_type: Application
+    EOF
+    
+    echo "EB Configuration created:"
+    cat .elasticbeanstalk/config.yml
+    
+    cat > .ebignore << 'EOF'
+    .git
+    .github
+    *.md
+    .env*
+    node_modules
+    .vscode
+    .idea
+    *.log
+    .elasticbeanstalk/*
+    !.elasticbeanstalk/*.cfg.yml
+    !.elasticbeanstalk/*.global.yml
+    EOF
+    
+    echo "Created .ebignore"
 
       - name: Create or Use Existing Environment
         run: |
