@@ -99,7 +99,7 @@ jobs:
             --region "$AWS_REGION" \
             --quiet
 
-            - name: Create or Use Existing Environment
+      - name: Create or Use Existing Environment
         shell: bash
         env:
           AWS_REGION: ${{ env.AWS_REGION }}
@@ -118,8 +118,6 @@ jobs:
             echo "✅ Environment exists. Using it."
           else
             echo "Creating new environment (this may take several minutes)..."
-            
-            # Create environment WITHOUT deprecated --yes flag
             eb create "$EB_ENVIRONMENT_NAME" \
               --region "$AWS_REGION" \
               --instance-type t3.micro \
@@ -132,12 +130,10 @@ jobs:
                 eb events "$EB_ENVIRONMENT_NAME" --follow || true
                 exit 1
               }
-
             echo "✅ Environment created."
           fi
 
           eb use "$EB_ENVIRONMENT_NAME"
-
 
       - name: Deploy Application
         shell: bash
