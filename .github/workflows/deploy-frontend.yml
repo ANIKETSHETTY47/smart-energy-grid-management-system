@@ -349,6 +349,7 @@ jobs:
           else
             echo "✅ Frontend URL: http://${URL}"
           fi
+          | grep '^arn:' | head -n1 | tr -d '\n\r' | xargs)
           rm -f "$TEMP_FILE"
           
           echo "AL2023 Query result: '$PLATFORM_ARN'"
@@ -579,7 +580,7 @@ jobs:
           else
             echo "✅ Frontend URL: http://${URL}"
           fi
-          rm -f "$TEMP_FILE"
+          | grep '^arn:' | head -n1 | tr -d '\n\r' | xargs)
             rm -f "$TEMP_FILE"
             
             echo "Fallback Query result: '$PLATFORM_ARN'"
