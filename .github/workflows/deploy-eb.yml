@@ -32,64 +32,94 @@ jobs:
           go-version: '1.22'
 
       - name: Install EB CLI
+        shell: bash
         run: |
-          pip install awsebcli --upgrade --user
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          python3 -m pip install --upgrade --user awsebcli
+          echo "$(python3 -m site --user-base)/bin" >> "$GITHUB_PATH"
+          eb --version
 
-      - name: Initialize Elastic Beanstalk
-  run: |
-    eb --version
-    
-    mkdir -p .elasticbeanstalk
-    
-    cat > .elasticbeanstalk/config.yml << 'EOF'
-    branch-defaults:
-      main:
-        environment: smart-energy-grid-env
-    global:
-      application_name: smart-energy-grid
-      default_region: us-east-1
-      platform: Go 1 running on 64bit Amazon Linux 2023
-      sc: git
-      workspace_type: Application
-    EOF
-    
-    echo "EB Configuration created:"
-    cat .elasticbeanstalk/config.yml
-    
-    cat > .ebignore << 'EOF'
-    .git
-    .github
-    *.md
-    .env*
-    node_modules
-    .vscode
-    .idea
-    *.log
-    .elasticbeanstalk/*
-    !.elasticbeanstalk/*.cfg.yml
-    !.elasticbeanstalk/*.global.yml
-    EOF
-    
-    echo "Created .ebignore"
+      - name: Initialize Elastic Beanstalk Config
+        shell: bash
+        run: |
+          mkdir -p .elasticbeanstalk
+          cat > .elasticbeanstalk/config.yml << 'EOF'
+          branch-defaults:
+            main:
+              environment: smart-energy-grid-env
+          global:
+            application_name: smart-energy-grid
+            default_region: us-east-1
+            platform: Go 1 running on 64bit Amazon Linux 2023
+            sc: git
+            workspace_type: Application
+          EOF
+
+          cat > .ebignore << 'EOF'
+          .git
+          .github
+          *.md
+          .env*
+          node_modules
+          .vscode
+          .idea
+          *.log
+          .elasticbeanstalk/*
+          !.elasticbeanstalk/*.cfg.yml
+          !.elasticbeanstalk/*.global.yml
+          EOF
+
+          echo "EB config and .ebignore created."
+          echo "----- .elasticbeanstalk/config.yml -----"
+          cat .elasticbeanstalk/config.yml
+
+      - name: Ensure Application Exists & EB Init
+        shell: bash
+        env:
+          AWS_REGION: ${{ env.AWS_REGION }}
+          EB_APPLICATION_NAME: ${{ env.EB_APPLICATION_NAME }}
+        run: |
+          set -euo pipefail
+
+          if ! aws elasticbeanstalk describe-applications \
+              --application-names "$EB_APPLICATION_NAME" \
+              --region "$AWS_REGION" \
+              --query 'Applications[0].ApplicationName' \
+              --output text >/dev/null 2>&1; then
+            echo "Creating EB Application: $EB_APPLICATION_NAME"
+            aws elasticbeanstalk create-application \
+              --application-name "$EB_APPLICATION_NAME" \
+              --region "$AWS_REGION"
+          else
+            echo "EB Application exists: $EB_APPLICATION_NAME"
+          fi
+
+          # Non-interactive init (safe even if already initialized)
+          eb init "$EB_APPLICATION_NAME" \
+            --platform "Go 1 running on 64bit Amazon Linux 2023" \
+            --region "$AWS_REGION" \
+            --quiet
 
       - name: Create or Use Existing Environment
+        shell: bash
+        env:
+          AWS_REGION: ${{ env.AWS_REGION }}
+          EB_APPLICATION_NAME: ${{ env.EB_APPLICATION_NAME }}
+          EB_ENVIRONMENT_NAME: ${{ env.EB_ENVIRONMENT_NAME }}
         run: |
-          set -e
-          
+          set -euo pipefail
+
           echo "Checking if environment exists..."
           if aws elasticbeanstalk describe-environments \
-            --application-name smart-energy-grid \
-            --environment-names smart-energy-grid-env \
-            --region us-east-1 \
-            --query 'Environments[?Status!=`Terminated`]' \
-            --output text | grep -q .; then
-            echo "✅ Environment exists, will deploy to it"
+              --application-name "$EB_APPLICATION_NAME" \
+              --environment-names "$EB_ENVIRONMENT_NAME" \
+              --region "$AWS_REGION" \
+              --query 'Environments[?Status!=`Terminated` && Status!=`Terminating`]' \
+              --output text | grep -q .; then
+            echo "✅ Environment exists. Using it."
           else
-            echo "Creating new environment..."
-            echo "This will take approximately 5-10 minutes..."
-            
-            eb create smart-energy-grid-env \
+            echo "Creating new environment (this may take several minutes)..."
+            eb create "$EB_ENVIRONMENT_NAME" \
+              --region "$AWS_REGION" \
               --instance-type t3.micro \
               --single \
               --timeout 20 \
@@ -97,24 +127,32 @@ jobs:
               --instance_profile aws-elasticbeanstalk-ec2-role \
               --yes || {
                 echo "❌ Failed to create environment"
-                eb events smart-energy-grid-env --follow || true
+                eb events "$EB_ENVIRONMENT_NAME" --follow || true
                 exit 1
               }
-            
-            echo "✅ Environment created successfully"
+            echo "✅ Environment created."
           fi
 
+          eb use "$EB_ENVIRONMENT_NAME"
+
       - name: Deploy Application
+        shell: bash
+        env:
+          EB_ENVIRONMENT_NAME: ${{ env.EB_ENVIRONMENT_NAME }}
         run: |
-          eb deploy smart-energy-grid-env
+          set -euo pipefail
+          eb deploy "$EB_ENVIRONMENT_NAME"
 
       - name: Get Environment Info
+        shell: bash
+        env:
+          EB_ENVIRONMENT_NAME: ${{ env.EB_ENVIRONMENT_NAME }}
         run: |
-          eb status smart-energy-grid-env
+          eb status "$EB_ENVIRONMENT_NAME"
           echo ""
           echo "================================"
           echo "✅ Backend URL:"
-          eb status smart-energy-grid-env | grep "CNAME" | awk '{print "http://"$2}'
+          eb status "$EB_ENVIRONMENT_NAME" | awk '/CNAME/ {print "http://"$2}'
           echo "================================"
           echo ""
-          echo "⚠️  IMPORTANT: Copy the backend URL above and update it in deploy-frontend.yml"
+          echo "⚠️  IMPORTANT: Copy the backend URL above and update it in your frontend config."
