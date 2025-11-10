@@ -39,9 +39,23 @@ jobs:
       - name: Initialize Elastic Beanstalk
         run: |
           eb --version
-          eb init ${{ env.EB_APPLICATION_NAME }} \
-            --platform "Go 1 running on 64bit Amazon Linux 2023" \
-            --region ${{ env.AWS_REGION }}
+          
+          # Create .elasticbeanstalk directory if it doesn't exist
+          mkdir -p .elasticbeanstalk
+          
+          # Create config file without problematic settings
+          cat > .elasticbeanstalk/config.yml << EOF
+          branch-defaults:
+            main:
+              environment: ${{ env.EB_ENVIRONMENT_NAME }}
+          global:
+            application_name: ${{ env.EB_APPLICATION_NAME }}
+            default_region: ${{ env.AWS_REGION }}
+            platform: Go 1 running on 64bit Amazon Linux 2023
+            sc: git
+          EOF
+          
+          cat .elasticbeanstalk/config.yml
 
       - name: Create or Use Existing Environment
         run: |
