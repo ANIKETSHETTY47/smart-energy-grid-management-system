@@ -40,47 +40,81 @@ jobs:
         run: |
           eb --version
           
-          # Create .elasticbeanstalk directory if it doesn't exist
           mkdir -p .elasticbeanstalk
           
-          # Create config file without problematic settings
-          cat > .elasticbeanstalk/config.yml << EOF
-          branch-defaults:
-            main:
-              environment: ${{ env.EB_ENVIRONMENT_NAME }}
-          global:
-            application_name: ${{ env.EB_APPLICATION_NAME }}
-            default_region: ${{ env.AWS_REGION }}
-            platform: Go 1 running on 64bit Amazon Linux 2023
-            sc: git
-          EOF
+          cat > .elasticbeanstalk/config.yml << 'EOF'
+branch-defaults:
+  main:
+    environment: smart-energy-grid-env
+global:
+  application_name: smart-energy-grid
+  default_region: us-east-1
+  platform: Go 1 running on 64bit Amazon Linux 2023
+  sc: git
+  workspace_type: Application
+EOF
           
+          echo "EB Configuration created:"
           cat .elasticbeanstalk/config.yml
+          
+          cat > .ebignore << 'EOF'
+.git
+.github
+*.md
+.env*
+node_modules
+.vscode
+.idea
+*.log
+.elasticbeanstalk/*
+!.elasticbeanstalk/*.cfg.yml
+!.elasticbeanstalk/*.global.yml
+EOF
+          
+          echo "Created .ebignore"
 
       - name: Create or Use Existing Environment
         run: |
-          # Check if environment exists
-          if eb list | grep -q "${{ env.EB_ENVIRONMENT_NAME }}"; then
+          set -e
+          
+          echo "Checking if environment exists..."
+          if aws elasticbeanstalk describe-environments \
+            --application-name smart-energy-grid \
+            --environment-names smart-energy-grid-env \
+            --region us-east-1 \
+            --query 'Environments[?Status!=`Terminated`]' \
+            --output text | grep -q .; then
             echo "✅ Environment exists, will deploy to it"
           else
             echo "Creating new environment..."
-            eb create ${{ env.EB_ENVIRONMENT_NAME }} \
+            echo "This will take approximately 5-10 minutes..."
+            
+            eb create smart-energy-grid-env \
               --instance-type t3.micro \
               --single \
-              --timeout 20
+              --timeout 20 \
+              --service-role aws-elasticbeanstalk-service-role \
+              --instance_profile aws-elasticbeanstalk-ec2-role \
+              --yes || {
+                echo "❌ Failed to create environment"
+                eb events smart-energy-grid-env --follow || true
+                exit 1
+              }
+            
+            echo "✅ Environment created successfully"
           fi
 
       - name: Deploy Application
         run: |
-          eb deploy ${{ env.EB_ENVIRONMENT_NAME }}
+          eb deploy smart-energy-grid-env
 
       - name: Get Environment Info
         run: |
-          eb status ${{ env.EB_ENVIRONMENT_NAME }}
+          eb status smart-energy-grid-env
           echo ""
           echo "================================"
           echo "✅ Backend URL:"
-          eb status ${{ env.EB_ENVIRONMENT_NAME }} | grep "CNAME" | awk '{print "http://"$2}'
+          eb status smart-energy-grid-env | grep "CNAME" | awk '{print "http://"$2}'
           echo "================================"
           echo ""
           echo "⚠️  IMPORTANT: Copy the backend URL above and update it in deploy-frontend.yml"
