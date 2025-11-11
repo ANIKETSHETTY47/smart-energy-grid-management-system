@@ -11,9 +11,7 @@ env:
   AWS_REGION: us-east-1
   EB_APP_NAME: energy-dashboard-frontend
   EB_ENV_NAME: energy-dashboard-frontend-env
-  # Update this to your backend's public URL/CNAME if different:
   BACKEND_API_URL: http://smart-energy-grid-env.us-east-1.elasticbeanstalk.com
-  FRONTEND_PORT: "3000"
 
 jobs:
   deploy:
@@ -31,152 +29,94 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Install EB CLI
-        shell: bash
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build Frontend
+        working-directory: web/energy-dashboard
         run: |
-          set -euo pipefail
+          go build -o energy-dashboard-go
+          echo "Build completed"
+
+      - name: Install EB CLI
+        run: |
           python3 -m pip install --upgrade --user awsebcli
           echo "$(python3 -m site --user-base)/bin" >> "$GITHUB_PATH"
-          eb --version
 
-      - name: Initialize EB config files
-        shell: bash
+      - name: Initialize EB Config
         working-directory: web/energy-dashboard
-        env:
-          AWS_REGION: ${{ env.AWS_REGION }}
-          EB_APP_NAME: ${{ env.EB_APP_NAME }}
-          EB_ENV_NAME: ${{ env.EB_ENV_NAME }}
         run: |
-          set -euo pipefail
-
           mkdir -p .elasticbeanstalk
-
-          # Write config with real values (shell variables expand here)
-          cat > .elasticbeanstalk/config.yml <<EOF
+          cat > .elasticbeanstalk/config.yml << EOF
           branch-defaults:
             main:
-              environment: ${EB_ENV_NAME}
+              environment: ${{ env.EB_ENV_NAME }}
           global:
-            application_name: ${EB_APP_NAME}
-            default_region: ${AWS_REGION}
-            platform: Node.js 20 running on 64bit Amazon Linux 2023
+            application_name: ${{ env.EB_APP_NAME }}
+            default_region: ${{ env.AWS_REGION }}
+            platform: Go 1 running on 64bit Amazon Linux 2023
             sc: git
             workspace_type: Application
           EOF
 
-          # Keep EB bundle small
-          cat > .ebignore <<'EOF'
-          .git
-          .github
-          *.md
-          .env*
-          node_modules
-          *.log
-          .elasticbeanstalk/*
-          !.elasticbeanstalk/*.cfg.yml
-          !.elasticbeanstalk/*.global.yml
-          EOF
-
-          echo "EB config created:"
-          cat .elasticbeanstalk/config.yml
-
-      - name: Ensure EB application exists & non-interactive init
-        shell: bash
+      - name: Create EB Application
         working-directory: web/energy-dashboard
-        env:
-          AWS_REGION: ${{ env.AWS_REGION }}
-          EB_APP_NAME: ${{ env.EB_APP_NAME }}
         run: |
-          set -euo pipefail
-
           if ! aws elasticbeanstalk describe-applications \
-                --application-names "$EB_APP_NAME" \
-                --region "$AWS_REGION" \
-                --query 'Applications[0].ApplicationName' \
-                --output text >/dev/null 2>&1; then
-            echo "Creating EB application: $EB_APP_NAME"
+              --application-names "${{ env.EB_APP_NAME }}" \
+              --region "${{ env.AWS_REGION }}" \
+              --query 'Applications[0].ApplicationName' \
+              --output text 2>/dev/null | grep -q "${{ env.EB_APP_NAME }}"; then
+            echo "Creating application..."
             aws elasticbeanstalk create-application \
-              --application-name "$EB_APP_NAME" \
-              --region "$AWS_REGION"
-          else
-            echo "EB application exists: $EB_APP_NAME"
+              --application-name "${{ env.EB_APP_NAME }}" \
+              --region "${{ env.AWS_REGION }}"
           fi
 
-          eb init "$EB_APP_NAME" \
-            --platform "Node.js 20 running on 64bit Amazon Linux 2023" \
-            --region "$AWS_REGION" \
-            --quiet
-
-      - name: Create or Use Existing Environment
-        shell: bash
+      - name: Initialize EB
         working-directory: web/energy-dashboard
-        env:
-          AWS_REGION: ${{ env.AWS_REGION }}
-          EB_APP_NAME: ${{ env.EB_APP_NAME }}
-          EB_ENV_NAME: ${{ env.EB_ENV_NAME }}
-          BACKEND_API_URL: ${{ env.BACKEND_API_URL }}
-          FRONTEND_PORT: ${{ env.FRONTEND_PORT }}
         run: |
-          set -euo pipefail
+          eb init "${{ env.EB_APP_NAME }}" \
+            --platform "Go 1 running on 64bit Amazon Linux 2023" \
+            --region "${{ env.AWS_REGION }}"
 
-          if aws elasticbeanstalk describe-environments \
-                --application-name "$EB_APP_NAME" \
-                --environment-names "$EB_ENV_NAME" \
-                --region "$AWS_REGION" \
-                --query 'Environments[?Status!=`Terminated` && Status!=`Terminating`]' \
-                --output text | grep -q .; then
-            echo "✅ Environment exists: $EB_ENV_NAME"
-            eb use "$EB_ENV_NAME"
-          else
-            echo "Creating environment: $EB_ENV_NAME (this can take several minutes)"
-            eb create "$EB_ENV_NAME" \
-              --region "$AWS_REGION" \
+      - name: Create or Update Environment
+        working-directory: web/energy-dashboard
+        run: |
+          if ! aws elasticbeanstalk describe-environments \
+              --application-name "${{ env.EB_APP_NAME }}" \
+              --environment-names "${{ env.EB_ENV_NAME }}" \
+              --region "${{ env.AWS_REGION }}" \
+              --query 'Environments[?Status!=`Terminated`]' \
+              --output text | grep -q .; then
+            echo "Creating environment..."
+            eb create "${{ env.EB_ENV_NAME }}" \
+              --region "${{ env.AWS_REGION }}" \
               --single \
               --instance-type t3.micro \
               --timeout 20 \
               --service-role aws-elasticbeanstalk-service-role \
               --instance_profile aws-elasticbeanstalk-ec2-role \
-              --envvars API_URL="$BACKEND_API_URL",PORT="$FRONTEND_PORT" \
-              --yes || {
-                echo "❌ Failed to create environment"
-                eb events "$EB_ENV_NAME" --follow || true
-                exit 1
-              }
-            eb use "$EB_ENV_NAME"
+              --envvars API_URL="${{ env.BACKEND_API_URL }}",PORT=3000
           fi
+          
+          eb use "${{ env.EB_ENV_NAME }}"
 
-      - name: Set/Update Environment Variables
-        shell: bash
+      - name: Set Environment Variables
         working-directory: web/energy-dashboard
-        env:
-          BACKEND_API_URL: ${{ env.BACKEND_API_URL }}
-          FRONTEND_PORT: ${{ env.FRONTEND_PORT }}
-          EB_ENV_NAME: ${{ env.EB_ENV_NAME }}
         run: |
-          set -euo pipefail
-          # Safe to run repeatedly
-          eb setenv API_URL="$BACKEND_API_URL" PORT="$FRONTEND_PORT"
-          echo "Env vars set for $EB_ENV_NAME"
+          eb setenv API_URL="${{ env.BACKEND_API_URL }}" PORT=3000
 
       - name: Deploy Application
-        shell: bash
         working-directory: web/energy-dashboard
-        env:
-          EB_ENV_NAME: ${{ env.EB_ENV_NAME }}
         run: |
-          set -euo pipefail
-          eb deploy "$EB_ENV_NAME"
+          eb deploy "${{ env.EB_ENV_NAME }}" --timeout 20
 
       - name: Get Environment Info
-        shell: bash
         working-directory: web/energy-dashboard
-        env:
-          EB_ENV_NAME: ${{ env.EB_ENV_NAME }}
         run: |
-          set -euo pipefail
-          eb status "$EB_ENV_NAME"
-          echo ""
-          echo "================================"
-          echo "✅ Frontend URL:"
-          eb status "$EB_ENV_NAME" | awk '/CNAME/ {print "http://"$2}'
-          echo "================================"
+          eb status "${{ env.EB_ENV_NAME }}"
+          echo "Frontend URL:"
+          eb status "${{ env.EB_ENV_NAME }}" | awk '/CNAME/ {print "http://"$2}'

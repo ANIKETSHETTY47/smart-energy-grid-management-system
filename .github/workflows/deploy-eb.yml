@@ -26,133 +26,73 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Setup Go
+      - name: Setup Go (sanity build only)
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
 
+      - name: Sanity Build (does not ship this binary)
+        run: |
+          go mod download
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o application ./cmd/api
+          echo "Sanity build ok"
+
       - name: Install EB CLI
-        shell: bash
         run: |
           python3 -m pip install --upgrade --user awsebcli
           echo "$(python3 -m site --user-base)/bin" >> "$GITHUB_PATH"
-          eb --version
 
-      - name: Initialize Elastic Beanstalk Config
-        shell: bash
+      - name: Initialize EB Config
         run: |
           mkdir -p .elasticbeanstalk
           cat > .elasticbeanstalk/config.yml << 'EOF'
           branch-defaults:
             main:
-              environment: smart-energy-grid-env
+              environment: ${{ env.EB_ENVIRONMENT_NAME }}
           global:
-            application_name: smart-energy-grid
-            default_region: us-east-1
+            application_name: ${{ env.EB_APPLICATION_NAME }}
+            default_region: ${{ env.AWS_REGION }}
             platform: Go 1 running on 64bit Amazon Linux 2023
             sc: git
             workspace_type: Application
           EOF
 
-          cat > .ebignore << 'EOF'
-          .git
-          .github
-          *.md
-          .env*
-          node_modules
-          .vscode
-          .idea
-          *.log
-          .elasticbeanstalk/*
-          !.elasticbeanstalk/*.cfg.yml
-          !.elasticbeanstalk/*.global.yml
-          EOF
-
-          echo "EB config and .ebignore created."
-          echo "----- .elasticbeanstalk/config.yml -----"
-          cat .elasticbeanstalk/config.yml
-
-      - name: Ensure Application Exists & EB Init
-        shell: bash
-        env:
-          AWS_REGION: ${{ env.AWS_REGION }}
-          EB_APPLICATION_NAME: ${{ env.EB_APPLICATION_NAME }}
+      - name: Ensure Application Exists
         run: |
-          set -euo pipefail
-
           if ! aws elasticbeanstalk describe-applications \
-              --application-names "$EB_APPLICATION_NAME" \
-              --region "$AWS_REGION" \
+              --application-names "${{ env.EB_APPLICATION_NAME }}" \
               --query 'Applications[0].ApplicationName' \
-              --output text >/dev/null 2>&1; then
-            echo "Creating EB Application: $EB_APPLICATION_NAME"
+              --output text 2>/dev/null | grep -q "${{ env.EB_APPLICATION_NAME }}"; then
             aws elasticbeanstalk create-application \
-              --application-name "$EB_APPLICATION_NAME" \
-              --region "$AWS_REGION"
-          else
-            echo "EB Application exists: $EB_APPLICATION_NAME"
+              --application-name "${{ env.EB_APPLICATION_NAME }}"
           fi
 
-          # Non-interactive init (safe even if already initialized)
-          eb init "$EB_APPLICATION_NAME" \
-            --platform "Go 1 running on 64bit Amazon Linux 2023" \
-            --region "$AWS_REGION" \
-            --quiet
-
-      - name: Create or Use Existing Environment
-        shell: bash
-        env:
-          AWS_REGION: ${{ env.AWS_REGION }}
-          EB_APPLICATION_NAME: ${{ env.EB_APPLICATION_NAME }}
-          EB_ENVIRONMENT_NAME: ${{ env.EB_ENVIRONMENT_NAME }}
+      - name: EB Init
         run: |
-          set -euo pipefail
+          eb init "${{ env.EB_APPLICATION_NAME }}" \
+            --platform "Go 1 running on 64bit Amazon Linux 2023" \
+            --region "${{ env.AWS_REGION }}"
 
-          echo "Checking if environment exists..."
-          if aws elasticbeanstalk describe-environments \
-              --application-name "$EB_APPLICATION_NAME" \
-              --environment-names "$EB_ENVIRONMENT_NAME" \
-              --region "$AWS_REGION" \
-              --query 'Environments[?Status!=`Terminated` && Status!=`Terminating`]' \
+      - name: Create Environment if Missing
+        run: |
+          if ! aws elasticbeanstalk describe-environments \
+              --application-name "${{ env.EB_APPLICATION_NAME }}" \
+              --environment-names "${{ env.EB_ENVIRONMENT_NAME }}" \
+              --query 'Environments[?Status!=`Terminated`]' \
               --output text | grep -q .; then
-            echo "✅ Environment exists. Using it."
-          else
-            echo "Creating new environment (this may take several minutes)..."
-            eb create "$EB_ENVIRONMENT_NAME" \
-              --region "$AWS_REGION" \
-              --instance-type t3.micro \
-              --single \
-              --timeout 20 \
+            eb create "${{ env.EB_ENVIRONMENT_NAME }}" \
+              --single --instance_type t3.micro \
               --service-role aws-elasticbeanstalk-service-role \
               --instance_profile aws-elasticbeanstalk-ec2-role \
-              --envvars PORT=8080 || {
-                echo "❌ Failed to create environment"
-                eb events "$EB_ENVIRONMENT_NAME" --follow || true
-                exit 1
-              }
-            echo "✅ Environment created."
+              --timeout 20
           fi
-
-          eb use "$EB_ENVIRONMENT_NAME"
+          eb use "${{ env.EB_ENVIRONMENT_NAME }}"
 
       - name: Deploy Application
-        shell: bash
-        env:
-          EB_ENVIRONMENT_NAME: ${{ env.EB_ENVIRONMENT_NAME }}
         run: |
-          set -euo pipefail
-          eb deploy "$EB_ENVIRONMENT_NAME"
+          # EB will use Buildfile (builds ./application) and Procfile (web: ./application)
+          eb deploy "${{ env.EB_ENVIRONMENT_NAME }}" --timeout 20
 
-      - name: Get Environment Info
-        shell: bash
-        env:
-          EB_ENVIRONMENT_NAME: ${{ env.EB_ENVIRONMENT_NAME }}
+      - name: Show Environment CNAME
         run: |
-          eb status "$EB_ENVIRONMENT_NAME"
-          echo ""
-          echo "================================"
-          echo "✅ Backend URL:"
-          eb status "$EB_ENVIRONMENT_NAME" | awk '/CNAME/ {print "http://"$2}'
-          echo "================================"
-          echo ""
-          echo "⚠️  IMPORTANT: Copy the backend URL above and update it in your frontend config."
+          eb status "${{ env.EB_ENVIRONMENT_NAME }}" | awk '/CNAME/ {print "Backend URL: http://"$2}'

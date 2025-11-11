@@ -4,9 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"os"
+	"sort"
+	"strconv"
 	"time"
 
 	"github.com/ANIKETSHETTY47/energy-grid-analytics-go/aggregator"
@@ -14,20 +18,19 @@ import (
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
+	ddbattr "github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-// YOUR ORIGINAL CONTRIBUTION: Lambda function for daily analytics aggregation
-// Processes energy readings and generates daily summaries
-
 var (
-	dynamoClient *dynamodb.Client
-	s3Client     *s3.Client
-	s3Bucket     string
-	ctx          = context.Background()
+	dynamoClient   *dynamodb.Client
+	s3Client       *s3.Client
+	tableReadings  string
+	tableAnalytics string
+	s3Bucket       string
+	defaultCtx     = context.Background()
 )
 
 type Reading struct {
@@ -58,7 +61,7 @@ type DailyAnalytics struct {
 	EstimatedCost       float64               `json:"estimated_cost"`
 	CostBreakdown       map[string]float64    `json:"cost_breakdown"`
 	AvgVoltage          float64               `json:"avg_voltage"`
-	VoltageVariance     float64               `json:"voltage_variance"`
+	VoltageStdDev       float64               `json:"voltage_stddev"`
 	AvgCurrent          float64               `json:"avg_current"`
 	PowerFactor         float64               `json:"power_factor"`
 	PeakHour            string                `json:"peak_hour"`
@@ -67,8 +70,8 @@ type DailyAnalytics struct {
 }
 
 type LambdaEvent struct {
-	Date       string `json:"date"`
-	FacilityID string `json:"facility_id"`
+	Date       string `json:"date"`        // YYYY-MM-DD (optional; defaults to yesterday)
+	FacilityID string `json:"facility_id"` // optional; defaults to facility-001
 }
 
 type LambdaResponse struct {
@@ -76,287 +79,360 @@ type LambdaResponse struct {
 	Body       map[string]interface{} `json:"body"`
 }
 
-func init() {
-	// YOUR ORIGINAL CONTRIBUTION: Initialize AWS clients
-	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(os.Getenv("AWS_REGION")))
-	if err != nil {
-		panic(fmt.Sprintf("unable to load SDK config: %v", err))
+func getenv(k, def string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
 	}
+	return def
+}
 
+func init() {
+	// Let the SDK discover region from environment/role; no need to force-set AWS_REGION.
+	cfg, err := config.LoadDefaultConfig(defaultCtx)
+	if err != nil {
+		panic(fmt.Sprintf("unable to load AWS SDK config: %v", err))
+	}
 	dynamoClient = dynamodb.NewFromConfig(cfg)
 	s3Client = s3.NewFromConfig(cfg)
-	s3Bucket = os.Getenv("S3_BUCKET")
-	if s3Bucket == "" {
-		s3Bucket = "energy-grid-reports"
-	}
+
+	// Env-driven names with safe defaults
+	tableReadings = getenv("DDB_TABLE_READINGS", "EnergyReadings")
+	tableAnalytics = getenv("DDB_TABLE_ANALYTICS", "AnalyticsSummaries")
+	s3Bucket = getenv("S3_BUCKET", "energy-grid-reports")
+
+	fmt.Printf("Cold start: ReadingsTable=%s AnalyticsTable=%s S3Bucket=%s\n",
+		tableReadings, tableAnalytics, s3Bucket)
 }
 
 func Handler(ctx context.Context, event LambdaEvent) (LambdaResponse, error) {
-	fmt.Printf("Analytics processing started for date: %s, facility: %s\n", event.Date, event.FacilityID)
-
-	// Use yesterday if no date provided
 	date := event.Date
 	if date == "" {
-		yesterday := time.Now().AddDate(0, 0, -1)
-		date = yesterday.Format("2006-01-02")
+		date = time.Now().AddDate(0, 0, -1).Format("2006-01-02") // default: yesterday
 	}
-
 	facilityID := event.FacilityID
 	if facilityID == "" {
 		facilityID = "facility-001"
 	}
 
-	// Fetch readings for the date
-	readings, err := getReadingsForDate(facilityID, date)
+	fmt.Printf("Start daily aggregation: facility=%s date=%s\n", facilityID, date)
+
+	readings, err := getReadingsForDate(ctx, facilityID, date, 2000) // sensible cap; paginate if needed
 	if err != nil {
-		return LambdaResponse{
-			StatusCode: 500,
-			Body:       map[string]interface{}{"error": err.Error()},
-		}, err
+		return fail(500, err)
 	}
-
 	if len(readings) == 0 {
-		return LambdaResponse{
-			StatusCode: 200,
-			Body:       map[string]interface{}{"message": "No data to process"},
-		}, nil
+		return ok(map[string]interface{}{
+			"message": "No data to process",
+			"date":    date,
+		})
 	}
 
-	// Calculate analytics
 	analytics := calculateDailyAnalytics(readings, date)
 
-	// Store analytics summary in DynamoDB
-	if err := storeAnalyticsSummary(facilityID, analytics); err != nil {
-		fmt.Printf("Error storing analytics: %v\n", err)
+	if err := storeAnalyticsSummary(ctx, facilityID, analytics); err != nil {
+		// Non-fatal: continue to S3 report so the day isn’t lost
+		fmt.Printf("WARN storeAnalyticsSummary: %v\n", err)
 	}
 
-	// Generate and upload report to S3
-	reportURL, err := generateReport(facilityID, date, analytics)
+	reportURL, err := generateReport(ctx, facilityID, date, analytics)
 	if err != nil {
-		fmt.Printf("Error generating report: %v\n", err)
+		fmt.Printf("WARN generateReport: %v\n", err)
 	}
 
-	return LambdaResponse{
-		StatusCode: 200,
-		Body: map[string]interface{}{
-			"message":    "Analytics processed successfully",
-			"date":       date,
-			"analytics":  analytics,
-			"report_url": reportURL,
-		},
-	}, nil
+	return ok(map[string]interface{}{
+		"message":    "Analytics processed successfully",
+		"date":       date,
+		"analytics":  analytics,
+		"report_url": reportURL,
+	})
 }
 
-// YOUR ORIGINAL CONTRIBUTION: Fetch all readings for a specific date
-func getReadingsForDate(facilityID, date string) ([]Reading, error) {
-	startOfDay, _ := time.Parse("2006-01-02", date)
+func ok(body map[string]interface{}) (LambdaResponse, error) {
+	return LambdaResponse{StatusCode: 200, Body: body}, nil
+}
+
+func fail(code int, err error) (LambdaResponse, error) {
+	return LambdaResponse{
+		StatusCode: code,
+		Body:       map[string]interface{}{"error": err.Error()},
+	}, err
+}
+
+// --- Data access ---
+
+// getReadingsForDate queries all readings for the facility within the day, handling pagination.
+func getReadingsForDate(ctx context.Context, facilityID, date string, pageLimit int32) ([]Reading, error) {
+	startOfDay, err := time.Parse("2006-01-02", date)
+	if err != nil {
+		return nil, fmt.Errorf("bad date format %q: %w", date, err)
+	}
 	endOfDay := startOfDay.Add(24 * time.Hour)
 
-	startTimestamp := startOfDay.Unix()
-	endTimestamp := endOfDay.Unix()
+	startTS := startOfDay.Unix()
+	endTS := endOfDay.Unix()
 
-	input := &dynamodb.QueryInput{
-		TableName:              aws.String("EnergyReadings"),
-		KeyConditionExpression: aws.String("facilityId = :fid AND #ts BETWEEN :start AND :end"),
-		ExpressionAttributeNames: map[string]string{
-			"#ts": "timestamp",
-		},
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":fid":   &types.AttributeValueMemberS{Value: facilityID},
-			":start": &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", startTimestamp)},
-			":end":   &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", endTimestamp)},
-		},
-	}
+	var (
+		all       []Reading
+		exclusive map[string]types.AttributeValue
+		pageCount int
+		maxPages  = 50 // guardrail
+	)
 
-	result, err := dynamoClient.Query(ctx, input)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query DynamoDB: %w", err)
-	}
+	for {
+		in := &dynamodb.QueryInput{
+			TableName:              aws.String(tableReadings),
+			KeyConditionExpression: aws.String("facilityId = :fid AND #ts BETWEEN :start AND :end"),
+			ExpressionAttributeNames: map[string]string{
+				"#ts": "timestamp",
+			},
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":fid":   &types.AttributeValueMemberS{Value: facilityID},
+				":start": &types.AttributeValueMemberN{Value: strconv.FormatInt(startTS, 10)},
+				":end":   &types.AttributeValueMemberN{Value: strconv.FormatInt(endTS, 10)},
+			},
+			ScanIndexForward:  aws.Bool(true), // oldest -> newest
+			Limit:             aws.Int32(pageLimit),
+			ExclusiveStartKey: exclusive,
+		}
 
-	var readings []Reading
-	if err := attributevalue.UnmarshalListOfMaps(result.Items, &readings); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal readings: %w", err)
-	}
+		out, err := dynamoClient.Query(ctx, in)
+		if err != nil {
+			return nil, fmt.Errorf("dynamodb query failed: %w", err)
+		}
 
-	return readings, nil
-}
+		var page []Reading
+		if err := ddbattr.UnmarshalListOfMaps(out.Items, &page); err != nil {
+			return nil, fmt.Errorf("unmarshal readings failed: %w", err)
+		}
+		all = append(all, page...)
 
-// YOUR ORIGINAL CONTRIBUTION: Calculate comprehensive daily analytics
-func calculateDailyAnalytics(readings []Reading, date string) DailyAnalytics {
-	// YOUR ORIGINAL CONTRIBUTION: Convert to library points
-	points := make([]aggregator.Point, len(readings))
-	for i, r := range readings {
-		points[i] = aggregator.Point{
-			Value:     r.PowerKW,
-			Timestamp: time.Unix(r.Timestamp, 0),
+		if len(out.LastEvaluatedKey) == 0 {
+			break
+		}
+		exclusive = out.LastEvaluatedKey
+		pageCount++
+		if pageCount > maxPages {
+			fmt.Printf("WARN: pagination stopped at %d pages (%d readings)\n", pageCount, len(all))
+			break
 		}
 	}
 
-	// YOUR ORIGINAL CONTRIBUTION: Use library aggregation
-	totalPower := aggregator.Sum(points)
-	avgPower := aggregator.Average(points)
-	// YOUR ORIGINAL CONTRIBUTION: Calculate moving average
-	movingAvg := aggregator.MovingAverage(points, 12) // 12-point moving average
+	return all, nil
+}
 
-	// YOUR ORIGINAL CONTRIBUTION: Use converter for cost calculations
+// --- Analytics ---
+
+func calculateDailyAnalytics(readings []Reading, date string) DailyAnalytics {
+	points := make([]aggregator.Point, len(readings))
+	for i, r := range readings {
+		points[i] = aggregator.Point{Value: r.PowerKW, Timestamp: time.Unix(r.Timestamp, 0)}
+	}
+
+	totalPower := aggregator.Sum(points)
+	avgPower := safeAverage(points)
+	movingAvg := aggregator.MovingAverage(points, 12) // configurable if needed
+
 	conv := &converter.EnergyConverter{}
 	totalConsumptionMWh := conv.KWhToMWh(totalPower)
 
-	// Calculate costs for different tiers
-	peakCost := conv.CalculateCost(totalPower*0.4, 0.20, "peak")       // 40% peak hours
-	offPeakCost := conv.CalculateCost(totalPower*0.6, 0.20, "offpeak") // 60% off-peak
+	// Simple cost model—tune as needed
+	peakCost := conv.CalculateCost(totalPower*0.4, 0.20, "peak")
+	offPeakCost := conv.CalculateCost(totalPower*0.6, 0.20, "offpeak")
 	totalCost := peakCost + offPeakCost
 
-	analytics := DailyAnalytics{
+	peak, min := findMaxMin(points)
+	hourly := calculateHourlyData(readings)
+	peakHour := derivePeakHour(hourly)
+
+	avgV := averageFloat(func(i int) float64 { return readings[i].Voltage }, len(readings))
+	avgI := averageFloat(func(i int) float64 { return readings[i].Current }, len(readings))
+	voltageStd := stddevFloat(func(i int) float64 { return readings[i].Voltage }, len(readings), avgV)
+
+	// Apparent power ≈ V * I (average); avoid negative/NaN
+	apparent := max0(avgV * avgI)
+	powerFactor := 0.0
+	if apparent > 0 {
+		powerFactor = conv.CalculateEfficiency(apparent, avgPower)
+	}
+
+	return DailyAnalytics{
 		Date:                date,
 		ReadingCount:        len(readings),
-		TotalConsumption:    totalPower,
-		TotalConsumptionMWh: totalConsumptionMWh,
-		AveragePower:        avgPower,
-		PeakPower:           findMax(points),
-		MinPower:            findMin(points),
-		MovingAverage:       movingAvg,
-		EstimatedCost:       totalCost,
+		TotalConsumption:    round2(totalPower),
+		TotalConsumptionMWh: round3(totalConsumptionMWh),
+		AveragePower:        round2(avgPower),
+		PeakPower:           round2(peak),
+		MinPower:            round2(min),
+		MovingAverage:       roundSlice(movingAvg, 2),
+		EstimatedCost:       round2(totalCost),
 		CostBreakdown: map[string]float64{
-			"peak":    peakCost,
-			"offpeak": offPeakCost,
+			"peak":    round2(peakCost),
+			"offpeak": round2(offPeakCost),
 		},
-		HourlyData: calculateHourlyData(readings),
-		CreatedAt:  time.Now().Unix(),
+		AvgVoltage:    round2(avgV),
+		VoltageStdDev: round3(voltageStd),
+		AvgCurrent:    round2(avgI),
+		PowerFactor:   round3(powerFactor),
+		PeakHour:      peakHour,
+		HourlyData:    hourly,
+		CreatedAt:     time.Now().Unix(),
 	}
-
-	// Calculate additional metrics
-	analytics.AvgVoltage = calculateAvgVoltage(readings)
-	analytics.AvgCurrent = calculateAvgCurrent(readings)
-	analytics.VoltageVariance = calculateVoltageVariance(readings, analytics.AvgVoltage)
-
-	// YOUR ORIGINAL CONTRIBUTION: Calculate efficiency using library
-	apparentPower := analytics.AvgVoltage * analytics.AvgCurrent
-	analytics.PowerFactor = conv.CalculateEfficiency(apparentPower, avgPower)
-
-	return analytics
 }
 
-func findMax(points []aggregator.Point) float64 {
-	max := 0.0
-	for _, p := range points {
-		if p.Value > max {
-			max = p.Value
-		}
+func safeAverage(points []aggregator.Point) float64 {
+	if len(points) == 0 {
+		return 0
 	}
-	return max
+	return aggregator.Average(points)
 }
 
-func findMin(points []aggregator.Point) float64 {
-	min := math.MaxFloat64
-	for _, p := range points {
-		if p.Value < min {
-			min = p.Value
+func findMaxMin(points []aggregator.Point) (maxVal, minVal float64) {
+	if len(points) == 0 {
+		return 0, 0
+	}
+	maxVal = points[0].Value
+	minVal = points[0].Value
+	for _, p := range points[1:] {
+		if p.Value > maxVal {
+			maxVal = p.Value
+		}
+		if p.Value < minVal {
+			minVal = p.Value
 		}
 	}
-	return min
+	return
 }
 
 func calculateHourlyData(readings []Reading) map[string]HourlyData {
-	hourlyMap := make(map[string]HourlyData)
-
+	hourly := make(map[string]HourlyData, 24)
 	for _, r := range readings {
-		hour := time.Unix(r.Timestamp, 0).Format("15")
-		data := hourlyMap[hour]
+		h := time.Unix(r.Timestamp, 0).Format("15") // "00".."23"
+		data := hourly[h]
 		data.Count++
 		data.TotalPower += r.PowerKW
 		if r.PowerKW > data.MaxPower {
 			data.MaxPower = r.PowerKW
 		}
-		hourlyMap[hour] = data
+		hourly[h] = data
 	}
-
-	// Calculate averages
-	for hour, data := range hourlyMap {
-		if data.Count > 0 {
-			data.AvgPower = data.TotalPower / float64(data.Count)
-			hourlyMap[hour] = data
+	for h, d := range hourly {
+		if d.Count > 0 {
+			d.AvgPower = d.TotalPower / float64(d.Count)
+			hourly[h] = d
 		}
 	}
-
-	return hourlyMap
+	return hourly
 }
 
-func calculateAvgVoltage(readings []Reading) float64 {
-	if len(readings) == 0 {
+func derivePeakHour(hourly map[string]HourlyData) string {
+	if len(hourly) == 0 {
+		return ""
+	}
+	type kv struct {
+		hour string
+		max  float64
+	}
+	var arr []kv
+	for h, d := range hourly {
+		arr = append(arr, kv{h, d.MaxPower})
+	}
+	sort.Slice(arr, func(i, j int) bool {
+		if arr[i].max == arr[j].max {
+			return arr[i].hour < arr[j].hour
+		}
+		return arr[i].max > arr[j].max
+	})
+	return arr[0].hour // "HH"
+}
+
+func averageFloat(get func(i int) float64, n int) float64 {
+	if n == 0 {
 		return 0
 	}
 	sum := 0.0
-	for _, r := range readings {
-		sum += r.Voltage
+	for i := 0; i < n; i++ {
+		sum += get(i)
 	}
-	return sum / float64(len(readings))
+	return sum / float64(n)
 }
 
-func calculateAvgCurrent(readings []Reading) float64 {
-	if len(readings) == 0 {
+func stddevFloat(get func(i int) float64, n int, mean float64) float64 {
+	if n == 0 {
 		return 0
 	}
-	sum := 0.0
-	for _, r := range readings {
-		sum += r.Current
+	var v float64
+	for i := 0; i < n; i++ {
+		d := get(i) - mean
+		v += d * d
 	}
-	return sum / float64(len(readings))
+	return math.Sqrt(v / float64(n))
 }
 
-func calculateVoltageVariance(readings []Reading, avgVoltage float64) float64 {
-	if len(readings) == 0 {
+func round2(x float64) float64 { return math.Round(x*100) / 100 }
+func round3(x float64) float64 { return math.Round(x*1000) / 1000 }
+func roundSlice(xs []float64, places int) []float64 {
+	if xs == nil {
+		return nil
+	}
+	out := make([]float64, len(xs))
+	k := math.Pow10(places)
+	for i, v := range xs {
+		out[i] = math.Round(v*k) / k
+	}
+	return out
+}
+func max0(x float64) float64 {
+	if x < 0 {
 		return 0
 	}
-	sum := 0.0
-	for _, r := range readings {
-		diff := r.Voltage - avgVoltage
-		sum += diff * diff
+	if math.IsNaN(x) || math.IsInf(x, 0) {
+		return 0
 	}
-	return math.Sqrt(sum / float64(len(readings)))
+	return x
 }
 
-// YOUR ORIGINAL CONTRIBUTION: Store analytics summary in DynamoDB
-// YOUR ORIGINAL CONTRIBUTION: Store analytics summary in DynamoDB
-func storeAnalyticsSummary(facilityID string, analytics DailyAnalytics) error {
-	// Create a map that includes facilityId
-	analyticsMap := map[string]interface{}{
-		"facilityId":       facilityID,
-		"date":             analytics.Date,
-		"readingCount":     analytics.ReadingCount,
-		"totalConsumption": analytics.TotalConsumption,
-		"averagePower":     analytics.AveragePower,
-		"peakPower":        analytics.PeakPower,
-		"minPower":         analytics.MinPower,
-		"avgVoltage":       analytics.AvgVoltage,
-		"voltageVariance":  analytics.VoltageVariance,
-		"avgCurrent":       analytics.AvgCurrent,
-		"powerFactor":      analytics.PowerFactor,
-		"peakHour":         analytics.PeakHour,
-		"hourlyData":       analytics.HourlyData,
-		"createdAt":        analytics.CreatedAt,
+// --- Persistence & reporting ---
+
+func storeAnalyticsSummary(ctx context.Context, facilityID string, analytics DailyAnalytics) error {
+	if facilityID == "" {
+		return errors.New("facilityID is empty")
 	}
 
-	item, err := attributevalue.MarshalMap(analyticsMap)
+	// Flatten for DDB: include facilityId + date as the composite key if your table expects it.
+	item := map[string]interface{}{
+		"facilityId":          facilityID,
+		"date":                analytics.Date,
+		"readingCount":        analytics.ReadingCount,
+		"totalConsumption":    analytics.TotalConsumption,
+		"totalConsumptionMWh": analytics.TotalConsumptionMWh,
+		"averagePower":        analytics.AveragePower,
+		"peakPower":           analytics.PeakPower,
+		"minPower":            analytics.MinPower,
+		"avgVoltage":          analytics.AvgVoltage,
+		"voltageStdDev":       analytics.VoltageStdDev,
+		"avgCurrent":          analytics.AvgCurrent,
+		"powerFactor":         analytics.PowerFactor,
+		"peakHour":            analytics.PeakHour,
+		"hourlyData":          analytics.HourlyData,
+		"createdAt":           analytics.CreatedAt,
+	}
+
+	marshalled, err := ddbattr.MarshalMap(item)
 	if err != nil {
-		return fmt.Errorf("failed to marshal analytics: %w", err)
+		return fmt.Errorf("marshal analytics: %w", err)
 	}
 
-	input := &dynamodb.PutItemInput{
-		TableName: aws.String("AnalyticsSummaries"),
-		Item:      item,
-	}
-
-	_, err = dynamoClient.PutItem(ctx, input)
+	_, err = dynamoClient.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(tableAnalytics),
+		Item:      marshalled,
+	})
 	if err != nil {
-		return fmt.Errorf("failed to put item: %w", err)
+		return fmt.Errorf("put item: %w", err)
 	}
-
 	return nil
 }
 
-// YOUR ORIGINAL CONTRIBUTION: Generate and upload report to S3
-func generateReport(facilityID, date string, analytics DailyAnalytics) (string, error) {
+func generateReport(ctx context.Context, facilityID, date string, analytics DailyAnalytics) (string, error) {
 	report := map[string]interface{}{
 		"title":       fmt.Sprintf("Daily Energy Report - %s", facilityID),
 		"date":        date,
@@ -373,78 +449,76 @@ func generateReport(facilityID, date string, analytics DailyAnalytics) (string, 
 		"recommendations":  generateRecommendations(analytics),
 	}
 
-	reportJSON, err := json.MarshalIndent(report, "", "  ")
+	b, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal report: %w", err)
+		return "", fmt.Errorf("marshal report: %w", err)
 	}
 
-	key := fmt.Sprintf("reports/%s/%s-analytics.json", facilityID, date)
-
-	input := &s3.PutObjectInput{
+	key := fmt.Sprintf("reports/%s/%s-analytics.json", safePath(facilityID), date)
+	_, err = s3Client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:      aws.String(s3Bucket),
 		Key:         aws.String(key),
-		Body:        bytes.NewReader(reportJSON), // <— use io.Reader directly
+		Body:        bytes.NewReader(b),
 		ContentType: aws.String("application/json"),
 		Metadata: map[string]string{
 			"facility-id":  facilityID,
 			"report-date":  date,
 			"generated-at": time.Now().Format(time.RFC3339),
 		},
-	}
-	_, err = s3Client.PutObject(ctx, input)
+	})
 	if err != nil {
-		return "", fmt.Errorf("failed to upload to S3: %w", err)
+		return "", fmt.Errorf("s3 put: %w", err)
 	}
 
-	reportURL := fmt.Sprintf("https://%s.s3.amazonaws.com/%s", s3Bucket, key)
-	return reportURL, nil
+	// Virtual-hosted–style URL (region-agnostic for public buckets or signed-URL flows)
+	return fmt.Sprintf("https://%s.s3.amazonaws.com/%s", s3Bucket, url.PathEscape(key)), nil
 }
 
-// YOUR ORIGINAL CONTRIBUTION: Generate efficiency recommendations
-func generateRecommendations(analytics DailyAnalytics) []map[string]string {
-	recommendations := []map[string]string{}
+func safePath(s string) string {
+	// simple sanitizer for S3 key path components
+	return url.PathEscape(s)
+}
 
-	// High consumption recommendation
-	if analytics.AveragePower > 50 {
-		recommendations = append(recommendations, map[string]string{
+// --- Recommendations ---
+
+func generateRecommendations(a DailyAnalytics) []map[string]string {
+	var recs []map[string]string
+
+	if a.AveragePower > 50 {
+		recs = append(recs, map[string]string{
 			"priority": "high",
 			"category": "consumption",
-			"message":  "Average power consumption is high. Consider load balancing or energy efficiency measures.",
+			"message":  "Average power is high. Consider load shifting and efficiency measures.",
 		})
 	}
 
-	// Power factor recommendation
-	if analytics.PowerFactor < 0.85 {
-		recommendations = append(recommendations, map[string]string{
+	if a.PowerFactor < 0.85 && a.PowerFactor > 0 {
+		recs = append(recs, map[string]string{
 			"priority": "medium",
 			"category": "efficiency",
-			"message":  fmt.Sprintf("Low power factor detected (%.3f). Install power factor correction equipment.", analytics.PowerFactor),
+			"message":  fmt.Sprintf("Low power factor (%.3f). Evaluate correction equipment.", a.PowerFactor),
 		})
 	}
 
-	// Voltage stability recommendation
-	if analytics.VoltageVariance > 10 {
-		recommendations = append(recommendations, map[string]string{
+	if a.VoltageStdDev > 10 {
+		recs = append(recs, map[string]string{
 			"priority": "high",
 			"category": "quality",
-			"message":  "High voltage variance detected. Check electrical infrastructure for issues.",
+			"message":  "High voltage variability detected. Inspect electrical infrastructure.",
 		})
 	}
 
-	// Peak hour recommendation
-	if analytics.PeakHour != "" {
-		peakHourInt := 0
-		fmt.Sscanf(analytics.PeakHour, "%d", &peakHourInt)
-		if peakHourInt >= 9 && peakHourInt <= 17 {
-			recommendations = append(recommendations, map[string]string{
+	if a.PeakHour != "" {
+		if h, _ := strconv.Atoi(a.PeakHour); h >= 9 && h <= 17 {
+			recs = append(recs, map[string]string{
 				"priority": "low",
 				"category": "optimization",
-				"message":  fmt.Sprintf("Peak consumption at %s:00. Consider shifting non-critical loads to off-peak hours.", analytics.PeakHour),
+				"message":  fmt.Sprintf("Peak at %s:00. Shift non-critical loads to off-peak hours.", a.PeakHour),
 			})
 		}
 	}
 
-	return recommendations
+	return recs
 }
 
 func main() {

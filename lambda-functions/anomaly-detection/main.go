@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -13,23 +15,21 @@ import (
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
+	ddbattr "github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/sns"
 )
 
-// YOUR ORIGINAL CONTRIBUTION: Lambda handler for real-time anomaly detection
-// Analyzes incoming energy readings and triggers alerts for abnormal consumption
-
 var (
-	dynamoClient *dynamodb.Client
-	snsClient    *sns.Client
-	topicArn     string
-	ctx          = context.Background()
+	dynamoClient  *dynamodb.Client
+	snsClient     *sns.Client
+	topicArn      string
+	tableReadings string
+	tableAlerts   string
+	defaultCtx    = context.Background()
 )
 
-// Reading represents an energy reading from DynamoDB
 type Reading struct {
 	FacilityID  string  `dynamodbav:"facilityId" json:"facility_id"`
 	MeterID     string  `dynamodbav:"meterId" json:"meter_id"`
@@ -41,7 +41,6 @@ type Reading struct {
 	Temperature float64 `dynamodbav:"temperature" json:"temperature"`
 }
 
-// Alert represents an alert to be stored
 type Alert struct {
 	AlertID      string                 `dynamodbav:"alertId"`
 	FacilityID   string                 `dynamodbav:"facilityId"`
@@ -54,7 +53,6 @@ type Alert struct {
 	Metadata     map[string]interface{} `dynamodbav:"metadata"`
 }
 
-// AnomalyResult holds anomaly detection results
 type AnomalyResult struct {
 	IsAnomaly        bool    `json:"is_anomaly"`
 	CurrentPower     float64 `json:"current_power"`
@@ -66,184 +64,278 @@ type AnomalyResult struct {
 	Reason           string  `json:"reason"`
 }
 
+func getenv(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+func mustAtoi(s string, def int) int {
+	if s == "" {
+		return def
+	}
+	if n, err := strconv.Atoi(s); err == nil {
+		return n
+	}
+	return def
+}
+
+func mustAtof(s string, def float64) float64 {
+	if s == "" {
+		return def
+	}
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
+		return f
+	}
+	return def
+}
+
 func init() {
-	// YOUR ORIGINAL CONTRIBUTION: Initialize AWS clients with SDK v2
-	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(os.Getenv("AWS_REGION")))
+	region := getenv("AWS_REGION", "us-east-1")
+
+	cfg, err := config.LoadDefaultConfig(defaultCtx, config.WithRegion(region))
 	if err != nil {
-		panic(fmt.Sprintf("unable to load SDK config: %v", err))
+		panic(fmt.Sprintf("unable to load AWS SDK config: %v", err))
 	}
 
 	dynamoClient = dynamodb.NewFromConfig(cfg)
 	snsClient = sns.NewFromConfig(cfg)
+
 	topicArn = os.Getenv("SNS_TOPIC_ARN")
+	tableReadings = getenv("DDB_TABLE_READINGS", "EnergyReadings")
+	tableAlerts = getenv("DDB_TABLE_ALERTS", "Alerts")
+
+	fmt.Printf("Lambda cold start. Region=%s ReadingsTable=%s AlertsTable=%s Topic=%s\n",
+		region, tableReadings, tableAlerts, topicArn)
 }
 
-// Handler is the Lambda entry point
+// Handler processes DynamoDB Stream events (INSERT/MODIFY on EnergyReadings)
 func Handler(ctx context.Context, event events.DynamoDBEvent) error {
-	fmt.Printf("Processing %d records\n", len(event.Records))
+	fmt.Printf("Received %d stream records\n", len(event.Records))
 
-	for _, record := range event.Records {
+	for i, record := range event.Records {
 		if record.EventName != "INSERT" && record.EventName != "MODIFY" {
 			continue
 		}
 
-		// YOUR ORIGINAL CONTRIBUTION: Parse DynamoDB stream event
 		reading, err := parseReading(record.Change.NewImage)
 		if err != nil {
-			fmt.Printf("Error parsing reading: %v\n", err)
+			fmt.Printf("Record %d: parse error: %v\n", i, err)
+			continue
+		}
+		if reading.FacilityID == "" || reading.MeterID == "" || reading.Timestamp == 0 {
+			fmt.Printf("Record %d: missing key fields (facilityId/meterId/timestamp)\n", i)
 			continue
 		}
 
-		fmt.Printf("Processing reading for facility %s, meter %s\n", reading.FacilityID, reading.MeterID)
+		fmt.Printf("Record %d: facility=%s meter=%s ts=%d power=%.3f kW\n",
+			i, reading.FacilityID, reading.MeterID, reading.Timestamp, reading.PowerKW)
 
-		// Get historical readings for comparison
-		historical, err := getHistoricalReadings(reading.FacilityID, reading.MeterID, 24)
+		// Tunables via env
+		hours := mustAtoi(getenv("HISTORICAL_HOURS", "24"), 24)
+		window := mustAtoi(getenv("ANOMALY_WINDOW", "24"), 24)
+		threshold := mustAtof(getenv("ANOMALY_THRESHOLD_SIGMA", "2.0"), 2.0)
+		maxItems := int32(mustAtoi(getenv("HISTORICAL_LIMIT", "200"), 200))
+
+		historical, err := getHistoricalReadings(ctx, reading.FacilityID, reading.MeterID, hours, maxItems)
 		if err != nil {
-			fmt.Printf("Error fetching historical readings: %v\n", err)
+			fmt.Printf("Record %d: error fetching historical readings: %v\n", i, err)
 			continue
 		}
 
-		// Detect anomaly
-		anomaly := detectAnomaly(reading, historical)
+		an := detectAnomaly(reading, historical, window, threshold)
+		if !an.IsAnomaly {
+			continue
+		}
 
-		if anomaly.IsAnomaly {
-			fmt.Printf("Anomaly detected: %+v\n", anomaly)
+		fmt.Printf("Record %d: anomaly: %+v\n", i, an)
 
-			// Store alert in DynamoDB
-			if err := storeAlert(reading, anomaly); err != nil {
-				fmt.Printf("Error storing alert: %v\n", err)
-			}
+		if err := storeAlert(ctx, reading, an); err != nil {
+			fmt.Printf("Record %d: error storing alert: %v\n", i, err)
+		}
 
-			// Send SNS notification
-			if err := sendAlert(reading, anomaly); err != nil {
-				fmt.Printf("Error sending SNS notification: %v\n", err)
-			}
+		if err := sendAlert(ctx, reading, an); err != nil {
+			fmt.Printf("Record %d: error sending SNS: %v\n", i, err)
 		}
 	}
 
 	return nil
 }
 
-// YOUR ORIGINAL CONTRIBUTION: Parse DynamoDB AttributeValue map to Reading struct
+// --- Helpers ---
 
 func parseReading(image map[string]events.DynamoDBAttributeValue) (*Reading, error) {
-	reading := &Reading{}
-
-	if v, ok := image["facilityId"]; ok {
-		reading.FacilityID = v.String()
-	}
-	if v, ok := image["meterId"]; ok {
-		reading.MeterID = v.String()
-	}
-	if v, ok := image["timestamp"]; ok {
-		if ts, err := strconv.ParseInt(v.Number(), 10, 64); err == nil {
-			reading.Timestamp = ts
-		}
-	}
-	if v, ok := image["voltage"]; ok {
-		if val, err := strconv.ParseFloat(v.Number(), 64); err == nil {
-			reading.Voltage = val
-		}
-	}
-	if v, ok := image["current"]; ok {
-		if val, err := strconv.ParseFloat(v.Number(), 64); err == nil {
-			reading.Current = val
-		}
-	}
-	if v, ok := image["powerKw"]; ok {
-		if val, err := strconv.ParseFloat(v.Number(), 64); err == nil {
-			reading.PowerKW = val
-		}
+	if image == nil {
+		return nil, errors.New("empty image")
 	}
 
-	return reading, nil
+	r := &Reading{}
+
+	if v, ok := image["facilityId"]; ok && v.DataType() == events.DataTypeString {
+		r.FacilityID = v.String()
+	}
+	if v, ok := image["meterId"]; ok && v.DataType() == events.DataTypeString {
+		r.MeterID = v.String()
+	}
+	if v, ok := image["timestamp"]; ok && (v.DataType() == events.DataTypeNumber || v.DataType() == events.DataTypeString) {
+		// Streams can deliver numbers as strings; handle both
+		if ts, err := strconv.ParseInt(v.String(), 10, 64); err == nil {
+			r.Timestamp = ts
+		}
+	}
+	if v, ok := image["voltage"]; ok && (v.DataType() == events.DataTypeNumber || v.DataType() == events.DataTypeString) {
+		if f, err := strconv.ParseFloat(v.String(), 64); err == nil {
+			r.Voltage = f
+		}
+	}
+	if v, ok := image["current"]; ok && (v.DataType() == events.DataTypeNumber || v.DataType() == events.DataTypeString) {
+		if f, err := strconv.ParseFloat(v.String(), 64); err == nil {
+			r.Current = f
+		}
+	}
+	if v, ok := image["powerKw"]; ok && (v.DataType() == events.DataTypeNumber || v.DataType() == events.DataTypeString) {
+		if f, err := strconv.ParseFloat(v.String(), 64); err == nil {
+			r.PowerKW = f
+		}
+	}
+
+	if r.FacilityID == "" || r.MeterID == "" || r.Timestamp == 0 {
+		b, _ := json.Marshal(image)
+		return nil, fmt.Errorf("missing required keys; image=%s", string(b))
+	}
+	return r, nil
 }
 
-// YOUR ORIGINAL CONTRIBUTION: Retrieve historical readings for baseline calculation
-func getHistoricalReadings(facilityID, meterID string, hours int) ([]Reading, error) {
+func getHistoricalReadings(ctx context.Context, facilityID, meterID string, hours int, limit int32) ([]Reading, error) {
 	now := time.Now().Unix()
-	startTime := now - int64(hours*3600)
+	start := now - int64(hours*3600)
 
+	// Partition key is facilityId, sort key is timestamp.
+	// If you also key by meterId, you might need a GSI. Adjust KeyCondition accordingly.
 	input := &dynamodb.QueryInput{
-		TableName:              aws.String("EnergyReadings"),
+		TableName:              aws.String(tableReadings),
 		KeyConditionExpression: aws.String("facilityId = :fid AND #ts BETWEEN :start AND :end"),
 		ExpressionAttributeNames: map[string]string{
 			"#ts": "timestamp",
 		},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":fid":   &types.AttributeValueMemberS{Value: facilityID},
-			":start": &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", startTime)},
+			":start": &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", start)},
 			":end":   &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", now)},
 		},
-		Limit: aws.Int32(100),
+		// Most recent first helps with “latest context” windows
+		ScanIndexForward: aws.Bool(false),
+		Limit:            aws.Int32(limit),
 	}
 
-	result, err := dynamoClient.Query(ctx, input)
+	out, err := dynamoClient.Query(ctx, input)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query DynamoDB: %w", err)
+		return nil, fmt.Errorf("dynamodb query failed: %w", err)
 	}
 
-	var readings []Reading
-	if err := attributevalue.UnmarshalListOfMaps(result.Items, &readings); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal readings: %w", err)
+	var all []Reading
+	if err := ddbattr.UnmarshalListOfMaps(out.Items, &all); err != nil {
+		return nil, fmt.Errorf("unmarshal readings failed: %w", err)
 	}
 
-	return readings, nil
+	// Optional: filter by meter when the table PK doesn’t include meterId
+	if meterID != "" {
+		filtered := all[:0]
+		for _, r := range all {
+			if r.MeterID == meterID {
+				filtered = append(filtered, r)
+			}
+		}
+		all = filtered
+	}
+
+	// We sorted desc; detector might not care, but stable ascending is nice
+	reverseInPlace(all)
+	return all, nil
 }
 
-// YOUR ORIGINAL CONTRIBUTION: Statistical anomaly detection using mean and standard deviation
-func detectAnomaly(current *Reading, historical []Reading) AnomalyResult {
-	// YOUR ORIGINAL CONTRIBUTION: Use library's anomaly detector
-	detector := &anomaly.AnomalyDetector{
-		Threshold:  2.0,
-		WindowSize: 24,
+func reverseInPlace(a []Reading) {
+	for i, j := 0, len(a)-1; i < j; i, j = i+1, j-1 {
+		a[i], a[j] = a[j], a[i]
+	}
+}
+
+func detectAnomaly(current *Reading, historical []Reading, window int, sigma float64) AnomalyResult {
+	if window <= 0 {
+		window = 24
+	}
+	if sigma <= 0 {
+		sigma = 2.0
 	}
 
-	// Convert to library's Reading format
-	libReadings := make([]anomaly.Reading, len(historical)+1)
-	for i, r := range historical {
-		libReadings[i] = anomaly.Reading{
+	// Build input to your library
+	n := len(historical)
+	lib := make([]anomaly.Reading, 0, n+1)
+	for _, r := range historical {
+		lib = append(lib, anomaly.Reading{
 			Consumption: r.PowerKW,
 			Timestamp:   r.Timestamp,
-		}
+		})
 	}
-	// Add current reading
-	libReadings[len(historical)] = anomaly.Reading{
+	lib = append(lib, anomaly.Reading{
 		Consumption: current.PowerKW,
 		Timestamp:   current.Timestamp,
+	})
+
+	detector := &anomaly.AnomalyDetector{
+		Threshold:  sigma,
+		WindowSize: window,
 	}
 
-	// YOUR ORIGINAL CONTRIBUTION: Detect spikes using library
-	spikes := detector.DetectSpikes(libReadings)
+	spikes := detector.DetectSpikes(lib)
+	outliers := detector.DetectOutliers(lib)
 
-	// YOUR ORIGINAL CONTRIBUTION: Detect outliers using IQR method
-	outliers := detector.DetectOutliers(libReadings)
-
-	// Calculate statistics for result
 	mean := calculateMean(historical)
-	stdDev := calculateStdDev(historical, mean)
+	std := calculateStdDev(historical, mean)
+
+	// Safe deviation % when mean == 0
+	devPct := 0.0
+	if mean != 0 {
+		devPct = ((current.PowerKW - mean) / mean) * 100
+	}
 
 	isAnomaly := len(spikes) > 0 || len(outliers) > 0
 	severity := "low"
-	if current.PowerKW > mean*2 {
+	switch {
+	case mean > 0 && current.PowerKW >= mean*2.0:
 		severity = "critical"
-	} else if current.PowerKW > mean*1.5 {
+	case mean > 0 && current.PowerKW >= mean*1.5:
 		severity = "high"
+	}
+
+	threshold := mean + std*sigma
+	if math.IsNaN(threshold) || math.IsInf(threshold, 0) {
+		threshold = 0
+	}
+
+	// If no history, treat large absolute power as low-severity anomaly to avoid silence.
+	if len(historical) == 0 && current.PowerKW > 0 {
+		isAnomaly = true
+		severity = "low"
 	}
 
 	return AnomalyResult{
 		IsAnomaly:        isAnomaly,
 		CurrentPower:     current.PowerKW,
 		Mean:             mean,
-		StdDev:           stdDev,
-		Threshold:        mean + (stdDev * detector.Threshold),
-		DeviationPercent: ((current.PowerKW - mean) / mean) * 100,
+		StdDev:           std,
+		Threshold:        threshold,
+		DeviationPercent: devPct,
 		Severity:         severity,
-		Reason:           fmt.Sprintf("Detected using %d-point window analysis", detector.WindowSize),
+		Reason:           fmt.Sprintf("Window=%d sigma=%.2f spikes=%d outliers=%d", window, sigma, len(spikes), len(outliers)),
 	}
 }
 
 func calculateMean(readings []Reading) float64 {
+	if len(readings) == 0 {
+		return 0
+	}
 	sum := 0.0
 	for _, r := range readings {
 		sum += r.PowerKW
@@ -252,61 +344,71 @@ func calculateMean(readings []Reading) float64 {
 }
 
 func calculateStdDev(readings []Reading, mean float64) float64 {
-	variance := 0.0
-	for _, r := range readings {
-		variance += math.Pow(r.PowerKW-mean, 2)
+	if len(readings) == 0 {
+		return 0
 	}
-	return math.Sqrt(variance / float64(len(readings)))
+	var v float64
+	for _, r := range readings {
+		d := r.PowerKW - mean
+		v += d * d
+	}
+	return math.Sqrt(v / float64(len(readings)))
 }
 
-// YOUR ORIGINAL CONTRIBUTION: Store alert in DynamoDB for tracking
-func storeAlert(reading *Reading, anomaly AnomalyResult) error {
-	alertID := fmt.Sprintf("alert-%d-%d", time.Now().Unix(), time.Now().Nanosecond())
+func storeAlert(ctx context.Context, reading *Reading, an AnomalyResult) error {
+	id := fmt.Sprintf("alert-%d-%d", time.Now().Unix(), time.Now().Nanosecond())
+
+	msg := fmt.Sprintf("Abnormal power consumption: %.2f kW (%.1f%% above average)",
+		an.CurrentPower, an.DeviationPercent)
 
 	alert := Alert{
-		AlertID:      alertID,
+		AlertID:      id,
 		FacilityID:   reading.FacilityID,
 		EquipmentID:  reading.MeterID,
 		Timestamp:    time.Now().Unix(),
-		Severity:     anomaly.Severity,
+		Severity:     an.Severity,
 		Type:         "anomaly",
-		Message:      fmt.Sprintf("Abnormal power consumption: %.2f kW (%.1f%% above average)", anomaly.CurrentPower, anomaly.DeviationPercent),
+		Message:      msg,
 		Acknowledged: false,
 		Metadata: map[string]interface{}{
-			"current_power":     anomaly.CurrentPower,
-			"average_power":     anomaly.Mean,
-			"deviation_percent": anomaly.DeviationPercent,
+			"current_power":     an.CurrentPower,
+			"average_power":     an.Mean,
+			"std_dev":           an.StdDev,
+			"threshold":         an.Threshold,
+			"deviation_percent": an.DeviationPercent,
+			"reason":            an.Reason,
 		},
 	}
 
-	item, err := attributevalue.MarshalMap(alert)
+	item, err := ddbattr.MarshalMap(alert)
 	if err != nil {
-		return fmt.Errorf("failed to marshal alert: %w", err)
+		return fmt.Errorf("marshal alert failed: %w", err)
 	}
 
-	input := &dynamodb.PutItemInput{
-		TableName: aws.String("Alerts"),
+	_, err = dynamoClient.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(tableAlerts),
 		Item:      item,
-	}
-
-	_, err = dynamoClient.PutItem(ctx, input)
+	})
 	if err != nil {
-		return fmt.Errorf("failed to put item: %w", err)
+		return fmt.Errorf("put alert failed: %w", err)
 	}
 
 	return nil
 }
 
-// YOUR ORIGINAL CONTRIBUTION: Send real-time alert via SNS
-func sendAlert(reading *Reading, anomaly AnomalyResult) error {
+func sendAlert(ctx context.Context, reading *Reading, an AnomalyResult) error {
 	if topicArn == "" {
-		fmt.Println("SNS_TOPIC_ARN not configured, skipping notification")
+		fmt.Println("SNS_TOPIC_ARN not set; skipping notification")
 		return nil
 	}
 
-	subject := fmt.Sprintf("[%s] Energy Grid Anomaly - %s", anomaly.Severity, reading.FacilityID)
-	message := fmt.Sprintf(`
-Energy Grid Anomaly Detected
+	subject := fmt.Sprintf("[%s] Energy Grid Anomaly - %s", an.Severity, reading.FacilityID)
+	if len(subject) > 100 {
+		subject = subject[:100]
+	}
+
+	message := fmt.Sprintf(
+		`Energy Grid Anomaly Detected
 
 Facility: %s
 Meter: %s
@@ -321,31 +423,26 @@ Time: %s
 
 Reason: %s
 
-Action Required: Please investigate immediately.
-`,
+Action Required: Please investigate immediately.`,
 		reading.FacilityID,
 		reading.MeterID,
-		anomaly.Severity,
-		anomaly.CurrentPower,
-		anomaly.Mean,
-		anomaly.DeviationPercent,
-		anomaly.Threshold,
+		an.Severity,
+		an.CurrentPower,
+		an.Mean,
+		an.DeviationPercent,
+		an.Threshold,
 		time.Now().Format(time.RFC3339),
-		anomaly.Reason,
+		an.Reason,
 	)
 
-	input := &sns.PublishInput{
+	_, err := snsClient.Publish(ctx, &sns.PublishInput{
 		TopicArn: aws.String(topicArn),
 		Subject:  aws.String(subject),
 		Message:  aws.String(message),
-	}
-
-	result, err := snsClient.Publish(ctx, input)
+	})
 	if err != nil {
-		return fmt.Errorf("failed to publish to SNS: %w", err)
+		return fmt.Errorf("sns publish failed: %w", err)
 	}
-
-	fmt.Printf("SNS notification sent: %s\n", *result.MessageId)
 	return nil
 }
 
