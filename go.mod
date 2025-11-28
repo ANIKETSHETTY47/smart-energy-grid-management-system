@@ -1,9 +1,9 @@
 module github.com/ANIKETSHETTY47/smart-energy-grid-management-system
 
-go 1.22.0
+go 1.24.0
 
 require (
-	github.com/ANIKETSHETTY47/energy-grid-analytics v1.0.0
+	github.com/ANIKETSHETTY47/energy-grid-analytics v1.0.1
 	github.com/aws/aws-sdk-go-v2 v1.39.6
 	github.com/aws/aws-sdk-go-v2/config v1.31.17
 	github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue v1.20.21
