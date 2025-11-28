@@ -32,10 +32,16 @@ jobs:
           go mod download
           go mod verify
 
-      - name: Run Tests
+      - name: Run Tests (if any exist)
         run: |
-          go test -v -race -coverprofile=coverage.out ./...
-          go tool cover -func=coverage.out
+          # Check if test files exist
+          if find . -name "*_test.go" | grep -q .; then
+            echo "Running tests..."
+            go test -v -race -coverprofile=coverage.out ./...
+            go tool cover -func=coverage.out
+          else
+            echo "No test files found, skipping tests"
+          fi
 
       - name: Build Backend Binary
         run: |
@@ -81,8 +87,6 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
-          audience: sts.amazonaws.com
-          output-env-credentials: true
 
       - name: Verify AWS Credentials
         run: |
@@ -97,13 +101,13 @@ jobs:
       - name: Initialize EB Configuration
         run: |
           mkdir -p .elasticbeanstalk
-          cat > .elasticbeanstalk/config.yml << 'EOF'
+          cat > .elasticbeanstalk/config.yml << EOF
           branch-defaults:
             main:
-              environment: ${{ env.EB_ENVIRONMENT_NAME }}
+              environment: $EB_ENVIRONMENT_NAME
           global:
-            application_name: ${{ env.EB_APPLICATION_NAME }}
-            default_region: ${{ env.AWS_REGION }}
+            application_name: $EB_APPLICATION_NAME
+            default_region: $AWS_REGION
             platform: Go 1 running on 64bit Amazon Linux 2023
             sc: git
             workspace_type: Application
@@ -112,55 +116,55 @@ jobs:
       - name: Ensure EB Application Exists
         run: |
           if ! aws elasticbeanstalk describe-applications \
-              --application-names "${{ env.EB_APPLICATION_NAME }}" \
-              --region "${{ env.AWS_REGION }}" \
+              --application-names "$EB_APPLICATION_NAME" \
+              --region "$AWS_REGION" \
               --query 'Applications[0].ApplicationName' \
-              --output text 2>/dev/null | grep -q "${{ env.EB_APPLICATION_NAME }}"; then
+              --output text 2>/dev/null | grep -q "$EB_APPLICATION_NAME"; then
             echo "Creating EB application..."
             aws elasticbeanstalk create-application \
-              --application-name "${{ env.EB_APPLICATION_NAME }}" \
+              --application-name "$EB_APPLICATION_NAME" \
               --description "Smart Energy Grid Management System Backend" \
-              --region "${{ env.AWS_REGION }}"
+              --region "$AWS_REGION"
           else
             echo "EB application already exists"
           fi
 
       - name: Initialize EB
         run: |
-          eb init "${{ env.EB_APPLICATION_NAME }}" \
+          eb init "$EB_APPLICATION_NAME" \
             --platform "Go 1 running on 64bit Amazon Linux 2023" \
-            --region "${{ env.AWS_REGION }}"
+            --region "$AWS_REGION"
 
       - name: Create or Use Environment
         run: |
           if ! aws elasticbeanstalk describe-environments \
-              --application-name "${{ env.EB_APPLICATION_NAME }}" \
-              --environment-names "${{ env.EB_ENVIRONMENT_NAME }}" \
-              --region "${{ env.AWS_REGION }}" \
+              --application-name "$EB_APPLICATION_NAME" \
+              --environment-names "$EB_ENVIRONMENT_NAME" \
+              --region "$AWS_REGION" \
               --query 'Environments[?Status!=`Terminated`]' \
               --output text 2>/dev/null | grep -q .; then
             echo "Creating new environment..."
-            eb create "${{ env.EB_ENVIRONMENT_NAME }}" \
+            eb create "$EB_ENVIRONMENT_NAME" \
               --single \
               --instance_type t3.micro \
-              --region "${{ env.AWS_REGION }}" \
+              --region "$AWS_REGION" \
               --service-role aws-elasticbeanstalk-service-role \
               --instance_profile aws-elasticbeanstalk-ec2-role \
               --timeout 20
           else
             echo "Environment exists, will deploy to it"
           fi
-          eb use "${{ env.EB_ENVIRONMENT_NAME }}"
+          eb use "$EB_ENVIRONMENT_NAME"
 
       - name: Deploy to Elastic Beanstalk
         run: |
           echo "Deploying backend to EB..."
-          eb deploy "${{ env.EB_ENVIRONMENT_NAME }}" --timeout 20
+          eb deploy "$EB_ENVIRONMENT_NAME" --timeout 20
 
       - name: Get Backend URL
         run: |
           echo "Backend deployed successfully!"
-          eb status "${{ env.EB_ENVIRONMENT_NAME }}" | awk '/CNAME/ {print "Backend URL: http://"$2}'
+          eb status "$EB_ENVIRONMENT_NAME" | awk '/CNAME/ {print "Backend URL: http://"$2}'
 
   # Deploy Frontend to Elastic Beanstalk
   deploy-frontend:
@@ -184,8 +188,6 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
-          audience: sts.amazonaws.com
-          output-env-credentials: true
 
       - name: Verify AWS Credentials
         run: |
@@ -201,13 +203,13 @@ jobs:
         working-directory: web/energy-dashboard
         run: |
           mkdir -p .elasticbeanstalk
-          cat > .elasticbeanstalk/config.yml << 'EOF'
+          cat > .elasticbeanstalk/config.yml << EOF
           branch-defaults:
             main:
-              environment: ${{ env.EB_ENV_NAME }}
+              environment: $EB_ENV_NAME
           global:
-            application_name: ${{ env.EB_APP_NAME }}
-            default_region: ${{ env.AWS_REGION }}
+            application_name: $EB_APP_NAME
+            default_region: $AWS_REGION
             platform: Go 1 running on 64bit Amazon Linux 2023
             sc: git
             workspace_type: Application
@@ -216,15 +218,15 @@ jobs:
       - name: Ensure Frontend Application Exists
         run: |
           if ! aws elasticbeanstalk describe-applications \
-              --application-names "${{ env.EB_APP_NAME }}" \
-              --region "${{ env.AWS_REGION }}" \
+              --application-names "$EB_APP_NAME" \
+              --region "$AWS_REGION" \
               --query 'Applications[0].ApplicationName' \
-              --output text 2>/dev/null | grep -q "${{ env.EB_APP_NAME }}"; then
+              --output text 2>/dev/null | grep -q "$EB_APP_NAME"; then
             echo "Creating frontend application..."
             aws elasticbeanstalk create-application \
-              --application-name "${{ env.EB_APP_NAME }}" \
+              --application-name "$EB_APP_NAME" \
               --description "Smart Energy Grid Dashboard Frontend" \
-              --region "${{ env.AWS_REGION }}"
+              --region "$AWS_REGION"
           else
             echo "Frontend application already exists"
           fi
@@ -232,51 +234,51 @@ jobs:
       - name: Initialize Frontend EB
         working-directory: web/energy-dashboard
         run: |
-          eb init "${{ env.EB_APP_NAME }}" \
+          eb init "$EB_APP_NAME" \
             --platform "Go 1 running on 64bit Amazon Linux 2023" \
-            --region "${{ env.AWS_REGION }}"
+            --region "$AWS_REGION"
 
       - name: Create or Use Frontend Environment
         working-directory: web/energy-dashboard
         run: |
           if ! aws elasticbeanstalk describe-environments \
-              --application-name "${{ env.EB_APP_NAME }}" \
-              --environment-names "${{ env.EB_ENV_NAME }}" \
-              --region "${{ env.AWS_REGION }}" \
+              --application-name "$EB_APP_NAME" \
+              --environment-names "$EB_ENV_NAME" \
+              --region "$AWS_REGION" \
               --query 'Environments[?Status!=`Terminated`]' \
               --output text 2>/dev/null | grep -q .; then
             echo "Creating frontend environment..."
-            eb create "${{ env.EB_ENV_NAME }}" \
-              --region "${{ env.AWS_REGION }}" \
+            eb create "$EB_ENV_NAME" \
+              --region "$AWS_REGION" \
               --single \
               --instance-type t3.micro \
               --timeout 20 \
               --service-role aws-elasticbeanstalk-service-role \
               --instance_profile aws-elasticbeanstalk-ec2-role \
-              --envvars API_URL="${{ env.BACKEND_API_URL }}",PORT=3000
+              --envvars API_URL="$BACKEND_API_URL",PORT=3000
           else
             echo "Frontend environment exists"
           fi
-          eb use "${{ env.EB_ENV_NAME }}"
+          eb use "$EB_ENV_NAME"
 
       - name: Set Environment Variables
         working-directory: web/energy-dashboard
         run: |
           eb setenv \
-            API_URL="${{ env.BACKEND_API_URL }}" \
+            API_URL="$BACKEND_API_URL" \
             PORT=3000
 
       - name: Deploy Frontend
         working-directory: web/energy-dashboard
         run: |
           echo "Deploying frontend to EB..."
-          eb deploy "${{ env.EB_ENV_NAME }}" --timeout 20
+          eb deploy "$EB_ENV_NAME" --timeout 20
 
       - name: Get Frontend URL
         working-directory: web/energy-dashboard
         run: |
           echo "Frontend deployed successfully!"
-          eb status "${{ env.EB_ENV_NAME }}" | awk '/CNAME/ {print "Frontend URL: http://"$2}'
+          eb status "$EB_ENV_NAME" | awk '/CNAME/ {print "Frontend URL: http://"$2}'
 
   # Deploy Lambda Functions
   deploy-lambda:
@@ -299,8 +301,6 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
-          audience: sts.amazonaws.com
-          output-env-credentials: true
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -319,14 +319,15 @@ jobs:
           FUNCTION_NAME="${{ matrix.function }}"
           
           # Check if function exists
-          if aws lambda get-function --function-name "$FUNCTION_NAME" --region "${{ env.AWS_REGION }}" 2>/dev/null; then
+          if aws lambda get-function --function-name "$FUNCTION_NAME" --region "$AWS_REGION" 2>/dev/null; then
             echo "Updating existing function..."
             aws lambda update-function-code \
               --function-name "$FUNCTION_NAME" \
               --zip-file fileb://function.zip \
-              --region "${{ env.AWS_REGION }}"
+              --region "$AWS_REGION"
           else
-            echo "Function doesn't exist. Please create it manually first or use SAM/Terraform."
+            echo "Function doesn't exist. Skipping deployment."
+            echo "Please create Lambda function '$FUNCTION_NAME' manually first."
           fi
 
       - name: Clean up
