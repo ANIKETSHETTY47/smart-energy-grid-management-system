@@ -1,3 +1,5 @@
+github.com/ANIKETSHETTY47/energy-grid-analytics v1.0.1 h1:V/HNcq9Cy7DMi+WD+dc9cmk0NuPbEex9VYPQUXDvdEI=
+github.com/ANIKETSHETTY47/energy-grid-analytics v1.0.1/go.mod h1:wWcqYSEeKxAAjo66zHLgYEn06t0YLZJIc+j3iqF4UYI=
 github.com/aws/aws-lambda-go v1.50.0 h1:0GzY18vT4EsCvIyk3kn3ZH5Jg30NRlgYaai1w0aGPMU=
 github.com/aws/aws-lambda-go v1.50.0/go.mod h1:dpMpZgvWx5vuQJfBt0zqBha60q7Dd7RfgJv23DymV8A=
 github.com/aws/aws-sdk-go-v2 v1.39.6 h1:2JrPCVgWJm7bm83BDwY5z8ietmeJUbh3O2ACnn+Xsqk=
