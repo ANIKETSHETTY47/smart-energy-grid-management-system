@@ -1,1 +1,1 @@
-web: ./smart-energy-grid-api
+web: ./application

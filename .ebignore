@@ -1,12 +1,52 @@
-.git
-.github
+# Git
+.git/
+.gitignore
+
+# Trash
+trash/
+
+# Documentation
 *.md
-README.md
-.env*
-node_modules
-.vscode
-.idea
-*.log
-web/*
-scripts/*
-lambda-functions/*
+!README.md
+
+# Scripts
+scripts/
+*.sh
+
+# Python setup files
+*.py
+
+# Test files
+*_test.go
+test/
+tests/
+
+# Development
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+
+# Build artifacts
+bin/
+dist/
+deployment.zip
+
+# Go
+vendor/
+
+# Lambda functions (deployed separately)
+lambda-functions/
+
+# Frontend (deployed separately)
+web/energy-dashboard/
+
+# Other deployment scripts
+deploy/
+Makefile
