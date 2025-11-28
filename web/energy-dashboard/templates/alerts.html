@@ -1,0 +1,47 @@
+{{define "content"}}
+<div class="alerts-container">
+  <div class="alerts-header">
+    <h2>System Alerts</h2>
+    <div class="filter-buttons">
+      <a class="btn {{if eq .Severity ""}}active{{end}}" href="/alerts">All</a>
+      <a class="btn {{if eq .Severity "critical"}}active{{end}}" href="/alerts?severity=critical">Critical</a>
+      <a class="btn {{if eq .Severity "high"}}active{{end}}" href="/alerts?severity=high">High</a>
+      <a class="btn {{if eq .Severity "medium"}}active{{end}}" href="/alerts?severity=medium">Medium</a>
+    </div>
+  </div>
+
+  <div class="alerts-list">
+    {{if not .Alerts}}
+      <div class="no-alerts">No alerts to display</div>
+    {{else}}
+      {{range .Alerts.Alerts}}
+        <div class="alert-card" style="border-left-color:#e2e8f0">
+          <div class="alert-header">
+            <div class="alert-severity"><strong>{{.Severity}}</strong></div>
+            <div class="alert-time">{{.Timestamp}}</div>
+          </div>
+          <div class="alert-body">
+            <h3>{{.Type}}</h3>
+            <p>{{.Message}}</p>
+            <div class="alert-meta">
+              <span>Equipment: {{.EquipmentID}}</span>
+              <span>Facility: {{.FacilityID}}</span>
+            </div>
+          </div>
+          <div class="alert-actions">
+            {{if not .Acknowledged}}
+            <form method="post" action="/alerts/acknowledge?id={{.AlertID}}">
+              <button class="btn-acknowledge" type="submit">Acknowledge</button>
+            </form>
+            {{else}}
+              <span class="acknowledged-badge">Acknowledged</span>
+            {{end}}
+          </div>
+        </div>
+      {{end}}
+    {{end}}
+  </div>
+</div>
+{{end}}
+
+{{template "layout" .}}

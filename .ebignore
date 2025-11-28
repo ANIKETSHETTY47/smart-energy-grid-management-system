@@ -1,0 +1,12 @@
+.git
+.github
+*.md
+README.md
+.env*
+node_modules
+.vscode
+.idea
+*.log
+web/*
+scripts/*
+lambda-functions/*

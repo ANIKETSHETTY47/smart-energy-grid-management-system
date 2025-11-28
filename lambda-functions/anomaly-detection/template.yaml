@@ -1,0 +1,20 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Local test for anomaly-detection (Go custom runtime)
+
+Resources:
+  AnomalyDetectionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: anomaly-detection
+      Runtime: provided.al2
+      Handler: bootstrap
+      Architectures:
+        - x86_64
+      MemorySize: 256
+      Timeout: 60
+      Environment:
+        Variables:
+          SNS_TOPIC_ARN: arn:aws:sns:us-east-1:402831945884:energy-grid-alerts
+    Metadata:
+      BuildMethod: makefile

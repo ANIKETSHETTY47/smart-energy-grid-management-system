@@ -1,0 +1,17 @@
+{
+  "Records": [
+    {
+      "eventName": "INSERT",
+      "dynamodb": {
+        "NewImage": {
+          "facilityId": {"S": "facility-001"},
+          "meterId": {"S": "meter-001"},
+          "timestamp": {"N": "1699999999"},
+          "voltage": {"N": "220.5"},
+          "current": {"N": "5.2"},
+          "powerKw": {"N": "150.5"}
+        }
+      }
+    }
+  ]
+}
