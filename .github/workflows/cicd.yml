@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 env:
-  AWS_REGION: us-east-1
+  AWS_REGION: eu-north-1
   GO_VERSION: '1.22'
 
 jobs:
@@ -81,6 +81,13 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+          output-env-credentials: true
+
+      - name: Verify AWS Credentials
+        run: |
+          echo "Verifying AWS credentials..."
+          aws sts get-caller-identity
 
       - name: Install EB CLI
         run: |
@@ -106,12 +113,14 @@ jobs:
         run: |
           if ! aws elasticbeanstalk describe-applications \
               --application-names "${{ env.EB_APPLICATION_NAME }}" \
+              --region "${{ env.AWS_REGION }}" \
               --query 'Applications[0].ApplicationName' \
               --output text 2>/dev/null | grep -q "${{ env.EB_APPLICATION_NAME }}"; then
             echo "Creating EB application..."
             aws elasticbeanstalk create-application \
               --application-name "${{ env.EB_APPLICATION_NAME }}" \
-              --description "Smart Energy Grid Management System Backend"
+              --description "Smart Energy Grid Management System Backend" \
+              --region "${{ env.AWS_REGION }}"
           else
             echo "EB application already exists"
           fi
@@ -127,12 +136,14 @@ jobs:
           if ! aws elasticbeanstalk describe-environments \
               --application-name "${{ env.EB_APPLICATION_NAME }}" \
               --environment-names "${{ env.EB_ENVIRONMENT_NAME }}" \
+              --region "${{ env.AWS_REGION }}" \
               --query 'Environments[?Status!=`Terminated`]' \
               --output text 2>/dev/null | grep -q .; then
             echo "Creating new environment..."
             eb create "${{ env.EB_ENVIRONMENT_NAME }}" \
               --single \
               --instance_type t3.micro \
+              --region "${{ env.AWS_REGION }}" \
               --service-role aws-elasticbeanstalk-service-role \
               --instance_profile aws-elasticbeanstalk-ec2-role \
               --timeout 20
@@ -161,7 +172,7 @@ jobs:
     env:
       EB_APP_NAME: energy-dashboard-frontend
       EB_ENV_NAME: energy-dashboard-frontend-env
-      BACKEND_API_URL: http://smart-energy-grid-env.us-east-1.elasticbeanstalk.com
+      BACKEND_API_URL: http://smart-energy-grid-env.eba-kpbmbqps.eu-north-1.elasticbeanstalk.com
 
     steps:
       - name: Checkout Code
@@ -173,6 +184,13 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+          output-env-credentials: true
+
+      - name: Verify AWS Credentials
+        run: |
+          echo "Verifying AWS credentials..."
+          aws sts get-caller-identity
 
       - name: Install EB CLI
         run: |
@@ -260,7 +278,7 @@ jobs:
           echo "Frontend deployed successfully!"
           eb status "${{ env.EB_ENV_NAME }}" | awk '/CNAME/ {print "Frontend URL: http://"$2}'
 
-  # Deploy Lambda Functions (Optional - only if needed)
+  # Deploy Lambda Functions
   deploy-lambda:
     name: Deploy Lambda Functions
     runs-on: ubuntu-latest
@@ -281,6 +299,8 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+          output-env-credentials: true
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -299,11 +319,12 @@ jobs:
           FUNCTION_NAME="${{ matrix.function }}"
           
           # Check if function exists
-          if aws lambda get-function --function-name "$FUNCTION_NAME" 2>/dev/null; then
+          if aws lambda get-function --function-name "$FUNCTION_NAME" --region "${{ env.AWS_REGION }}" 2>/dev/null; then
             echo "Updating existing function..."
             aws lambda update-function-code \
               --function-name "$FUNCTION_NAME" \
-              --zip-file fileb://function.zip
+              --zip-file fileb://function.zip \
+              --region "${{ env.AWS_REGION }}"
           else
             echo "Function doesn't exist. Please create it manually first or use SAM/Terraform."
           fi

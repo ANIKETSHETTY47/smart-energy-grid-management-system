@@ -67,3 +67,6 @@ require (
 	golang.org/x/sys v0.36.0 // indirect
 	golang.org/x/text v0.29.0 // indirect
 )
+
+// Local development - use local library
+replace github.com/ANIKETSHETTY47/energy-grid-analytics => ../energy-grid-analytics

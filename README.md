@@ -10,6 +10,7 @@ A cloud-native IoT platform for real-time energy grid monitoring, analytics, and
 - **Message Queue**: AWS SNS for notifications
 - **Serverless Functions**: AWS Lambda for analytics and anomaly detection
 - **Storage**: AWS S3 for data archival
+- **Custom Library**: [energy-grid-analytics](https://github.com/ANIKETSHETTY47/energy-grid-analytics) v1.0.0
 
 ## 🚀 Quick Start
 
@@ -28,29 +29,35 @@ A cloud-native IoT platform for real-time energy grid monitoring, analytics, and
    cd smart-energy-grid-management-system
    ```
 
-2. **Install dependencies**
+2. **Use local library version (Optional)**
+   ```bash
+   # For local development with the custom library
+   cp go.mod.local go.mod
+   ```
+
+3. **Install dependencies**
    ```bash
    go mod download
    ```
 
-3. **Set up environment variables**
+4. **Set up environment variables**
    ```bash
    cp .env.example .env
    # Edit .env with your configuration
    ```
 
-4. **Run database migrations**
+5. **Run database migrations**
    ```bash
    psql -U postgres -d energy_grid -f scripts/schema.sql
    psql -U postgres -d energy_grid -f scripts/seed.sql
    ```
 
-5. **Start the backend API**
+6. **Start the backend API**
    ```bash
    go run ./cmd/api/main.go
    ```
 
-6. **Start the frontend (in another terminal)**
+7. **Start the frontend (in another terminal)**
    ```bash
    cd web/energy-dashboard
    go run main.go
@@ -82,7 +89,8 @@ A cloud-native IoT platform for real-time energy grid monitoring, analytics, and
 ├── .github/workflows/ # CI/CD pipelines
 ├── Buildfile         # Elastic Beanstalk build config
 ├── Procfile          # Elastic Beanstalk process config
-└── go.mod            # Go dependencies
+├── go.mod            # Go dependencies (production - uses published library)
+└── go.mod.local      # Local development (uses local library)
 ```
 
 ## 🔧 Configuration
@@ -104,7 +112,7 @@ DB_NAME=energy_grid
 
 # AWS Configuration
 USE_CLOUD_SERVICES=false
-AWS_REGION=us-east-1
+AWS_REGION=eu-north-1
 AWS_ACCESS_KEY_ID=your_key
 AWS_SECRET_ACCESS_KEY=your_secret
 
@@ -123,12 +131,16 @@ SNS_ALERT_TOPIC_ARN=arn:aws:sns:region:account:alerts
 
 ### CI/CD Pipeline
 
-The project uses GitHub Actions for automated deployments:
+The project uses GitHub Actions for automated deployments to **eu-north-1** (Stockholm):
 
 1. **Test & Build**: Runs tests and builds binaries
 2. **Deploy Backend**: Deploys API to Elastic Beanstalk
 3. **Deploy Frontend**: Deploys dashboard to Elastic Beanstalk
 4. **Deploy Lambda**: Updates Lambda functions
+
+**Required GitHub Secrets:**
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
 
 ### Manual Deployment
 
@@ -136,7 +148,7 @@ The project uses GitHub Actions for automated deployments:
 
 ```bash
 # Initialize EB (first time only)
-eb init smart-energy-grid --platform go --region us-east-1
+eb init smart-energy-grid --platform go --region eu-north-1
 
 # Create environment (first time only)
 eb create smart-energy-grid-env --single --instance_type t3.micro
@@ -151,7 +163,7 @@ eb deploy
 cd web/energy-dashboard
 
 # Initialize EB (first time only)
-eb init energy-dashboard-frontend --platform go --region us-east-1
+eb init energy-dashboard-frontend --platform go --region eu-north-1
 
 # Create environment (first time only)
 eb create energy-dashboard-frontend-env --single --instance_type t3.micro
@@ -181,20 +193,23 @@ go test -v ./...
 ### Health Check
 - `GET /health` - Service health status
 
-### Sensors
-- `GET /api/sensors` - List all sensors
-- `GET /api/sensors/:id` - Get sensor details
-- `POST /api/sensors` - Register new sensor
-- `PUT /api/sensors/:id` - Update sensor
-- `DELETE /api/sensors/:id` - Delete sensor
+### Facilities & Meters
+- `GET /facilities` - List all facilities
+- `GET /meters` - List all meters
 
 ### Readings
-- `GET /api/readings` - List readings with filters
-- `POST /api/readings` - Submit new reading
+- `GET /readings/recent?facility_id={id}&hours={h}` - Get recent readings
+- `POST /readings/check-anomaly` - Check for anomalies
 
 ### Alerts
-- `GET /api/alerts` - List active alerts
-- `POST /api/alerts/:id/acknowledge` - Acknowledge alert
+- `GET /alerts?facility_id={id}&severity={sev}` - List alerts with filters
+- `POST /alerts/{alert_id}/acknowledge` - Acknowledge alert
+
+### Analytics
+- `POST /analytics/generate` - Generate daily analytics report
+
+### Equipment
+- `GET /equipment/{id}/maintenance` - Get maintenance predictions
 
 ### Dashboard
 - `GET /` - Main dashboard
@@ -205,6 +220,21 @@ go test -v ./...
 - `GET /ws` - WebSocket connection for real-time updates
 
 ## 🛠️ Development
+
+### Local Development with Custom Library
+
+When developing both the main application and the custom library simultaneously:
+
+```bash
+# Switch to local library
+cp go.mod.local go.mod
+go mod tidy
+
+# After testing, switch back to published library
+git checkout go.mod
+```
+
+**Note:** Always commit with `go.mod` pointing to the published library for CI/CD to work correctly.
 
 ### Adding New Features
 
@@ -232,29 +262,30 @@ go test -v ./...
 **AWS Services Not Working**
 - Verify AWS credentials are configured
 - Check IAM permissions
-- Ensure services are enabled in your region
+- Ensure services are enabled in eu-north-1 region
 
 **EB Deployment Fails**
 - Check EB CLI version: `eb --version`
 - Verify AWS permissions
 - Check application logs: `eb logs`
 
-## 📝 License
+**CI/CD Pipeline Fails**
+- Verify GitHub secrets are set correctly
+- Check that library v1.0.0 is published
+- Ensure `go.mod` doesn't have local replace directive
 
-[Your License Here]
+## 📝 Custom Library
 
-## 👥 Contributors
+The project uses a custom Go library for energy analytics:
+- **Repository**: https://github.com/ANIKETSHETTY47/energy-grid-analytics
+- **Version**: v1.0.0
+- **Packages**: converter, aggregator, anomaly, maintenance
 
-[Your Team Information]
-
-## 📞 Support
-
-For issues and questions:
-- Open an issue on GitHub
-- Contact: [your-email@example.com]
+See the library README for detailed documentation on available functions.
 
 ## 🔗 Related Documentation
 
 - [AWS Elastic Beanstalk Docs](https://docs.aws.amazon.com/elasticbeanstalk/)
 - [AWS Lambda Docs](https://docs.aws.amazon.com/lambda/)
 - [Go Documentation](https://golang.org/doc/)
+- [Custom Library Docs](https://github.com/ANIKETSHETTY47/energy-grid-analytics)
