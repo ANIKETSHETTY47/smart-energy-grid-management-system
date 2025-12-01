@@ -118,6 +118,16 @@ func (c *Client) GenerateAnalytics(ctx context.Context, facilityID, date string)
 	return &out, nil
 }
 
+func (c *Client) Equipment(ctx context.Context, facilityID string) (*models.EquipmentResponse, error) {
+	params := url.Values{}
+	params.Set("facility_id", facilityID)
+	var out models.EquipmentResponse
+	if err := c.getJSON(ctx, "/equipment", &out, params); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 func (c *Client) getJSON(ctx context.Context, path string, out any, params url.Values) error {
 	u := c.makeURL(path)
 	if params != nil {

@@ -55,8 +55,17 @@ type AnalyticsGenerateResponse struct {
 }
 
 type Equipment struct {
-	ID     string  `json:"id"`
-	Type   string  `json:"type"`
-	Status string  `json:"status"`
-	Health float64 `json:"health"`
+	ID              string  `json:"id"`
+	EquipmentID     string  `json:"equipment_id"`
+	Type            string  `json:"type"`
+	Status          string  `json:"status"`
+	Health          float64 `json:"health"`
+	HealthScore     float64 `json:"health_score"`
+	FacilityID      string  `json:"facility_id"`
+	InstallDate     int64   `json:"install_date"`
+	LastMaintenance int64   `json:"last_maintenance"`
+}
+
+type EquipmentResponse struct {
+	Equipment []Equipment `json:"equipment"`
 }

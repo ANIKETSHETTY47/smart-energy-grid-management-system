@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -41,11 +40,15 @@ func New() *Server {
 		},
 	}
 
-	tmpl := template.Must(template.New("base").Funcs(funcMap).ParseGlob("templates/*.html"))
-
-	if matches, _ := filepath.Glob("templates/partials/*.html"); len(matches) > 0 {
-		tmpl = template.Must(tmpl.ParseFiles(matches...))
-	}
+	// Load templates explicitly
+	tmpl := template.New("").Funcs(funcMap)
+	template.Must(tmpl.ParseFiles(
+		"templates/layout.html",
+		"templates/dashboard.html",
+		"templates/equipment.html",
+		"templates/alerts.html",
+		"templates/analytics.html",
+	))
 
 	facility := os.Getenv("FACILITY_ID")
 	if facility == "" {
@@ -197,17 +200,20 @@ func (s *Server) handleEquipment(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	equipment := []models.Equipment{
-		{ID: "eq-001", Type: "Transformer", Status: "operational", Health: 95.5},
-		{ID: "eq-002", Type: "Generator", Status: "operational", Health: 88.2},
-		{ID: "eq-003", Type: "Meter", Status: "warning", Health: 72.8},
-		{ID: "eq-004", Type: "Switch", Status: "operational", Health: 98.1},
+	equipment, err := s.api.Equipment(ctx, s.facility)
+	if err != nil {
+		log.Println("equipment fetch error:", err)
+		equipment = &models.EquipmentResponse{
+			FacilityID: s.facility,
+			Count:      0,
+			Equipment:  []models.Equipment{},
+		}
 	}
 
 	data := map[string]interface{}{
 		"Title":      "Equipment Monitoring",
 		"FacilityID": s.facility,
-		"Equipment":  equipment,
+		"Equipment":  equipment.Equipment,
 		"APIStatus":  s.status(ctx),
 	}
 
@@ -314,7 +320,7 @@ func toJSON(v interface{}) template.JS {
 func (s *Server) render(w http.ResponseWriter, name string, data interface{}) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpl.ExecuteTemplate(w, name, data); err != nil {
-		log.Println("render error:", err)
+		log.Println("render error:", err, "template:", name)
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
 }

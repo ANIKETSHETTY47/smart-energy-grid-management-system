@@ -1,0 +1,397 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"math/rand"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+)
+
+func main() {
+	ctx := context.Background()
+
+	// Load AWS configuration
+	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion("us-east-1"))
+	if err != nil {
+		panic(fmt.Sprintf("Unable to load SDK config: %v", err))
+	}
+
+	client := dynamodb.NewFromConfig(cfg)
+
+	// Populate EnergyReadings table
+	fmt.Println("Populating EnergyReadings table...")
+	if err := populateReadings(ctx, client); err != nil {
+		fmt.Printf("Error populating readings: %v\n", err)
+	} else {
+		fmt.Println("✓ EnergyReadings populated successfully")
+	}
+
+	// Populate Alerts table
+	fmt.Println("\nPopulating Alerts table...")
+	if err := populateAlerts(ctx, client); err != nil {
+		fmt.Printf("Error populating alerts: %v\n", err)
+	} else {
+		fmt.Println("✓ Alerts populated successfully")
+	}
+
+	// Populate Equipment table
+	fmt.Println("\nPopulating Equipment table...")
+	if err := populateEquipment(ctx, client); err != nil {
+		fmt.Printf("Error populating equipment: %v\n", err)
+	} else {
+		fmt.Println("✓ Equipment populated successfully")
+	}
+
+	// Populate AnalyticsSummaries table
+	fmt.Println("\nPopulating AnalyticsSummaries table...")
+	if err := populateAnalytics(ctx, client); err != nil {
+		fmt.Printf("Error populating analytics: %v\n", err)
+	} else {
+		fmt.Println("✓ AnalyticsSummaries populated successfully")
+	}
+
+	fmt.Println("\n✅ All tables populated successfully!")
+}
+
+type Reading struct {
+	FacilityID  string  `dynamodbav:"facilityId"`
+	Timestamp   int64   `dynamodbav:"timestamp"`
+	MeterID     string  `dynamodbav:"meterId"`
+	Voltage     float64 `dynamodbav:"voltage"`
+	Current     float64 `dynamodbav:"current"`
+	PowerKW     float64 `dynamodbav:"powerKw"`
+	Status      string  `dynamodbav:"status"`
+	Temperature float64 `dynamodbav:"temperature"`
+}
+
+type Alert struct {
+	AlertID      string                 `dynamodbav:"alertId"`
+	FacilityID   string                 `dynamodbav:"facilityId"`
+	Timestamp    int64                  `dynamodbav:"timestamp"`
+	Severity     string                 `dynamodbav:"severity"`
+	Type         string                 `dynamodbav:"type"`
+	Message      string                 `dynamodbav:"message"`
+	Acknowledged bool                   `dynamodbav:"acknowledged"`
+	EquipmentID  string                 `dynamodbav:"equipmentId"`
+	Metadata     map[string]interface{} `dynamodbav:"metadata"`
+}
+
+type Equipment struct {
+	EquipmentID     string  `dynamodbav:"equipmentId"`
+	FacilityID      string  `dynamodbav:"facilityId"`
+	Type            string  `dynamodbav:"type"`
+	InstallDate     int64   `dynamodbav:"installDate"`
+	LastMaintenance int64   `dynamodbav:"lastMaintenance"`
+	HealthScore     float64 `dynamodbav:"healthScore"`
+	Status          string  `dynamodbav:"status"`
+}
+
+type AnalyticsSummary struct {
+	FacilityID          string             `dynamodbav:"facilityId"`
+	Date                string             `dynamodbav:"date"`
+	ReadingCount        int                `dynamodbav:"readingCount"`
+	TotalConsumption    float64            `dynamodbav:"totalConsumption"`
+	TotalConsumptionMWh float64            `dynamodbav:"totalConsumptionMWh"`
+	AveragePower        float64            `dynamodbav:"averagePower"`
+	PeakPower           float64            `dynamodbav:"peakPower"`
+	MinPower            float64            `dynamodbav:"minPower"`
+	AvgVoltage          float64            `dynamodbav:"avgVoltage"`
+	VoltageStdDev       float64            `dynamodbav:"voltageStdDev"`
+	AvgCurrent          float64            `dynamodbav:"avgCurrent"`
+	PowerFactor         float64            `dynamodbav:"powerFactor"`
+	PeakHour            string             `dynamodbav:"peakHour"`
+	EstimatedCost       float64            `dynamodbav:"estimatedCost"`
+	HourlyData          map[string]float64 `dynamodbav:"hourlyData"`
+	CreatedAt           int64              `dynamodbav:"createdAt"`
+}
+
+func populateReadings(ctx context.Context, client *dynamodb.Client) error {
+	facilities := []string{"facility-001", "facility-002"}
+	meters := []string{"meter-001", "meter-002", "meter-003"}
+	statuses := []string{"operational", "operational", "operational", "warning"}
+
+	now := time.Now()
+	rand.Seed(now.UnixNano())
+
+	var writeRequests []types.WriteRequest
+
+	// Generate readings for the last 7 days
+	for day := 0; day < 7; day++ {
+		date := now.AddDate(0, 0, -day)
+
+		// Generate 24 readings per day (hourly)
+		for hour := 0; hour < 24; hour++ {
+			for _, facility := range facilities {
+				for _, meter := range meters {
+					timestamp := date.Add(time.Duration(hour) * time.Hour).Unix()
+
+					// Base values with some variation
+					baseVoltage := 220.0 + rand.Float64()*10.0
+					baseCurrent := 5.0 + rand.Float64()*3.0
+					basePower := 1.0 + rand.Float64()*2.0
+
+					// Simulate peak hours (9-17) with higher consumption
+					if hour >= 9 && hour <= 17 {
+						basePower *= 1.5
+					}
+
+					// Occasionally simulate anomalies
+					if rand.Float64() < 0.05 { // 5% chance of anomaly
+						basePower *= 2.5
+					}
+
+					reading := Reading{
+						FacilityID:  facility,
+						Timestamp:   timestamp,
+						MeterID:     meter,
+						Voltage:     baseVoltage,
+						Current:     baseCurrent,
+						PowerKW:     basePower,
+						Status:      statuses[rand.Intn(len(statuses))],
+						Temperature: 40.0 + rand.Float64()*15.0,
+					}
+
+					item, err := attributevalue.MarshalMap(reading)
+					if err != nil {
+						return fmt.Errorf("marshal reading: %w", err)
+					}
+
+					writeRequests = append(writeRequests, types.WriteRequest{
+						PutRequest: &types.PutRequest{Item: item},
+					})
+
+					// DynamoDB batch write limit is 25 items
+					if len(writeRequests) >= 25 {
+						if err := batchWrite(ctx, client, "EnergyReadings", writeRequests); err != nil {
+							return err
+						}
+						writeRequests = writeRequests[:0]
+						fmt.Printf(".")
+					}
+				}
+			}
+		}
+	}
+
+	// Write remaining items
+	if len(writeRequests) > 0 {
+		if err := batchWrite(ctx, client, "EnergyReadings", writeRequests); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func populateAlerts(ctx context.Context, client *dynamodb.Client) error {
+	facilities := []string{"facility-001", "facility-002"}
+	severities := []string{"low", "medium", "high", "critical"}
+	alertTypes := []string{"anomaly", "threshold", "equipment_failure", "maintenance_required"}
+	equipmentIDs := []string{"meter-001", "meter-002", "meter-003", "transformer-01", "generator-01"}
+
+	now := time.Now()
+	rand.Seed(now.UnixNano())
+
+	// Generate 50 alerts over the last 30 days
+	for i := 0; i < 50; i++ {
+		daysAgo := rand.Intn(30)
+		timestamp := now.AddDate(0, 0, -daysAgo).Unix()
+		
+		facility := facilities[rand.Intn(len(facilities))]
+		severity := severities[rand.Intn(len(severities))]
+		alertType := alertTypes[rand.Intn(len(alertTypes))]
+		equipmentID := equipmentIDs[rand.Intn(len(equipmentIDs))]
+
+		var message string
+		switch alertType {
+		case "anomaly":
+			deviation := 50.0 + rand.Float64()*100.0
+			message = fmt.Sprintf("Abnormal power consumption: %.2f kW (%.1f%% above average)", 
+				2.5+rand.Float64()*5.0, deviation)
+		case "threshold":
+			message = fmt.Sprintf("Power threshold exceeded on %s", equipmentID)
+		case "equipment_failure":
+			message = fmt.Sprintf("Equipment %s showing signs of failure", equipmentID)
+		case "maintenance_required":
+			message = fmt.Sprintf("Scheduled maintenance due for %s", equipmentID)
+		}
+
+		alert := Alert{
+			AlertID:      fmt.Sprintf("alert-%d-%d", timestamp, rand.Intn(10000)),
+			FacilityID:   facility,
+			Timestamp:    timestamp,
+			Severity:     severity,
+			Type:         alertType,
+			Message:      message,
+			Acknowledged: rand.Float64() > 0.3, // 70% acknowledged
+			EquipmentID:  equipmentID,
+			Metadata: map[string]interface{}{
+				"current_power":     2.5 + rand.Float64()*5.0,
+				"average_power":     1.8,
+				"deviation_percent": 50.0 + rand.Float64()*100.0,
+			},
+		}
+
+		item, err := attributevalue.MarshalMap(alert)
+		if err != nil {
+			return fmt.Errorf("marshal alert: %w", err)
+		}
+
+		_, err = client.PutItem(ctx, &dynamodb.PutItemInput{
+			TableName: aws.String("Alerts"),
+			Item:      item,
+		})
+		if err != nil {
+			return fmt.Errorf("put alert: %w", err)
+		}
+		fmt.Printf(".")
+	}
+
+	return nil
+}
+
+func populateEquipment(ctx context.Context, client *dynamodb.Client) error {
+	equipment := []Equipment{
+		{
+			EquipmentID:     "meter-001",
+			FacilityID:      "facility-001",
+			Type:            "smart_meter",
+			InstallDate:     time.Now().AddDate(-2, 0, 0).Unix(),
+			LastMaintenance: time.Now().AddDate(0, -6, 0).Unix(),
+			HealthScore:     92.5,
+			Status:          "operational",
+		},
+		{
+			EquipmentID:     "meter-002",
+			FacilityID:      "facility-001",
+			Type:            "smart_meter",
+			InstallDate:     time.Now().AddDate(-1, -6, 0).Unix(),
+			LastMaintenance: time.Now().AddDate(0, -3, 0).Unix(),
+			HealthScore:     88.3,
+			Status:          "operational",
+		},
+		{
+			EquipmentID:     "meter-003",
+			FacilityID:      "facility-002",
+			Type:            "smart_meter",
+			InstallDate:     time.Now().AddDate(-3, 0, 0).Unix(),
+			LastMaintenance: time.Now().AddDate(0, -8, 0).Unix(),
+			HealthScore:     75.8,
+			Status:          "warning",
+		},
+		{
+			EquipmentID:     "transformer-01",
+			FacilityID:      "facility-001",
+			Type:            "transformer",
+			InstallDate:     time.Now().AddDate(-5, 0, 0).Unix(),
+			LastMaintenance: time.Now().AddDate(0, -12, 0).Unix(),
+			HealthScore:     82.0,
+			Status:          "operational",
+		},
+		{
+			EquipmentID:     "generator-01",
+			FacilityID:      "facility-002",
+			Type:            "backup_generator",
+			InstallDate:     time.Now().AddDate(-4, 0, 0).Unix(),
+			LastMaintenance: time.Now().AddDate(0, -2, 0).Unix(),
+			HealthScore:     95.2,
+			Status:          "operational",
+		},
+	}
+
+	for _, eq := range equipment {
+		item, err := attributevalue.MarshalMap(eq)
+		if err != nil {
+			return fmt.Errorf("marshal equipment: %w", err)
+		}
+
+		_, err = client.PutItem(ctx, &dynamodb.PutItemInput{
+			TableName: aws.String("Equipment"),
+			Item:      item,
+		})
+		if err != nil {
+			return fmt.Errorf("put equipment: %w", err)
+		}
+		fmt.Printf(".")
+	}
+
+	return nil
+}
+
+func populateAnalytics(ctx context.Context, client *dynamodb.Client) error {
+	facilities := []string{"facility-001", "facility-002"}
+	now := time.Now()
+	rand.Seed(now.UnixNano())
+
+	// Generate analytics for last 30 days
+	for day := 0; day < 30; day++ {
+		date := now.AddDate(0, 0, -day).Format("2006-01-02")
+
+		for _, facility := range facilities {
+			hourlyData := make(map[string]float64)
+			for hour := 0; hour < 24; hour++ {
+				power := 1.0 + rand.Float64()*3.0
+				if hour >= 9 && hour <= 17 {
+					power *= 1.5 // Peak hours
+				}
+				hourlyData[fmt.Sprintf("%02d", hour)] = power
+			}
+
+			summary := AnalyticsSummary{
+				FacilityID:          facility,
+				Date:                date,
+				ReadingCount:        72, // 3 meters * 24 hours
+				TotalConsumption:    120.5 + rand.Float64()*50.0,
+				TotalConsumptionMWh: 0.12 + rand.Float64()*0.05,
+				AveragePower:        1.67 + rand.Float64()*0.5,
+				PeakPower:           4.5 + rand.Float64()*1.5,
+				MinPower:            0.8 + rand.Float64()*0.3,
+				AvgVoltage:          220.5 + rand.Float64()*5.0,
+				VoltageStdDev:       2.3 + rand.Float64()*1.0,
+				AvgCurrent:          6.2 + rand.Float64()*1.5,
+				PowerFactor:         0.92 + rand.Float64()*0.05,
+				PeakHour:            fmt.Sprintf("%02d", 9+rand.Intn(8)),
+				EstimatedCost:       24.10 + rand.Float64()*10.0,
+				HourlyData:          hourlyData,
+				CreatedAt:           time.Now().Unix(),
+			}
+
+			item, err := attributevalue.MarshalMap(summary)
+			if err != nil {
+				return fmt.Errorf("marshal analytics: %w", err)
+			}
+
+			_, err = client.PutItem(ctx, &dynamodb.PutItemInput{
+				TableName: aws.String("AnalyticsSummaries"),
+				Item:      item,
+			})
+			if err != nil {
+				return fmt.Errorf("put analytics: %w", err)
+			}
+			fmt.Printf(".")
+		}
+	}
+
+	return nil
+}
+
+func batchWrite(ctx context.Context, client *dynamodb.Client, tableName string, writeRequests []types.WriteRequest) error {
+	input := &dynamodb.BatchWriteItemInput{
+		RequestItems: map[string][]types.WriteRequest{
+			tableName: writeRequests,
+		},
+	}
+
+	_, err := client.BatchWriteItem(ctx, input)
+	if err != nil {
+		return fmt.Errorf("batch write: %w", err)
+	}
+
+	return nil
+}

@@ -1,174 +1,406 @@
+{{template "layout" .}}
+
 {{define "content"}}
-<div class="fade-in">
-  <div class="dashboard-header">
+<div class="equipment-page fade-in">
+  <div class="page-header">
     <div>
       <h1>Equipment Monitoring</h1>
-      <p style="color: #64748b; margin-top: 0.5rem;">Real-time health tracking - Facility: {{.FacilityID}}</p>
+      <p style="color: #64748b; margin-top: 0.5rem;">Real-time health tracking - {{.FacilityID}}</p>
     </div>
-    <div class="header-info">
-      <button class="refresh-btn" onclick="location.reload()">
-        <span>🔄</span> Refresh
-      </button>
-    </div>
+    <button class="refresh-btn" onclick="location.reload()">
+      🔄 Refresh
+    </button>
   </div>
 
   <div class="stats-grid">
     <div class="stat-card">
-      <div class="stat-content">
-        <h3>Total Equipment</h3>
-        <p class="stat-value">{{if .Equipment}}{{len .Equipment}}{{else}}0{{end}}</p>
-      </div>
+      <h3>Total Equipment</h3>
+      <p class="stat-value">{{if .Equipment}}{{len .Equipment}}{{else}}0{{end}}</p>
     </div>
     <div class="stat-card">
-      <div class="stat-content">
-        <h3>Operational</h3>
-        <p class="stat-value" style="color: #10b981;" id="operational">0</p>
-      </div>
+      <h3>Operational</h3>
+      <p class="stat-value" style="color: #10b981;" id="operational">0</p>
     </div>
     <div class="stat-card">
-      <div class="stat-content">
-        <h3>Warning</h3>
-        <p class="stat-value" style="color: #f59e0b;" id="warning">0</p>
-      </div>
+      <h3>Warning</h3>
+      <p class="stat-value" style="color: #f59e0b;" id="warning">0</p>
     </div>
     <div class="stat-card">
-      <div class="stat-content">
-        <h3>Average Health</h3>
-        <p class="stat-value" id="avgHealth">0%</p>
-      </div>
+      <h3>Average Health</h3>
+      <p class="stat-value" id="avgHealth">0%</p>
     </div>
   </div>
 
-  <div class="equipment-grid">
-    {{range .Equipment}}
-    <div class="equipment-card">
-      <div class="equipment-header">
-        <div class="equipment-title">
-          <h3>{{.Type}}</h3>
-          <span class="equipment-id">{{.ID}}</span>
+  {{if .Equipment}}
+    <div class="equipment-grid">
+      {{range .Equipment}}
+      <div class="equipment-card">
+        <div class="equipment-header">
+          <div>
+            <h3>{{.Type}}</h3>
+            <span class="equipment-id">{{.ID}}</span>
+          </div>
+          <span class="status-badge status-{{.Status}}">{{.Status}}</span>
         </div>
-        <span class="equipment-status {{.Status}}">{{.Status}}</span>
-      </div>
-      
-      <div class="health-indicator">
-        <div class="health-label">
-          <span>Health Score</span>
-          <strong>{{printf "%.1f" .Health}}%</strong>
+        
+        <div class="health-section">
+          <div class="health-label">
+            <span>Health Score</span>
+            <strong>{{printf "%.1f" .Health}}%</strong>
+          </div>
+          <div class="health-bar">
+            <div class="health-fill {{if gt .Health 90.0}}excellent{{else if gt .Health 75.0}}good{{else if gt .Health 60.0}}warning{{else}}critical{{end}}" 
+                 style="width: {{.Health}}%"></div>
+          </div>
         </div>
-        <div class="health-bar">
-          <div class="health-fill {{if gt .Health 90.0}}excellent{{else if gt .Health 75.0}}good{{else if gt .Health 60.0}}warning{{else}}critical{{end}}" 
-               data-health="{{.Health}}"></div>
-        </div>
-      </div>
 
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem;">
-        <div>
-          <div style="font-size: 0.75rem; color: #64748b; text-transform: uppercase;">Last Check</div>
-          <div style="font-weight: 600; margin-top: 0.25rem;">2 hours ago</div>
+        <div class="equipment-details">
+          <div class="detail-item">
+            <span class="detail-label">Last Check</span>
+            <span class="detail-value">2 hours ago</span>
+          </div>
+          <div class="detail-item">
+            <span class="detail-label">Next Service</span>
+            <span class="detail-value">30 days</span>
+          </div>
         </div>
-        <div>
-          <div style="font-size: 0.75rem; color: #64748b; text-transform: uppercase;">Next Service</div>
-          <div style="font-weight: 600; margin-top: 0.25rem;">30 days</div>
-        </div>
-      </div>
 
-      <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #e2e8f0;">
-        <button class="btn-acknowledge" onclick="scheduleMaintenance('{{.ID}}')">
+        <button class="btn-maintenance" onclick="scheduleMaintenance('{{.ID}}')">
           Schedule Maintenance
         </button>
       </div>
+      {{end}}
     </div>
-    {{end}}
-  </div>
+  {{else}}
+    <div class="no-data">
+      <p>⚙️ No equipment data available</p>
+      <small>Check API connection or populate DynamoDB</small>
+    </div>
+  {{end}}
 
-  <!-- Fixed-height, full-width chart -->
-  <div class="chart-container chart-container--md" style="margin-top: 2rem;">
-    <h2>Equipment Health Trends</h2>
+  <div class="chart-container" style="margin-top: 2rem;">
+    <h2>Equipment Health Trends (30 Days)</h2>
     <canvas id="healthTrendChart"></canvas>
   </div>
 </div>
 
-<!-- Safer JSON injection -->
 <script id="equipmentData" type="application/json">
-{{toJSON .Equipment}}
+{{if .Equipment}}{{toJSON .Equipment}}{{else}}[]{{end}}
 </script>
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
   const dataScript = document.getElementById('equipmentData');
-  const equipmentData = dataScript ? JSON.parse(dataScript.textContent || '[]') : [];
+  let equipment = [];
+  
+  try {
+    equipment = JSON.parse(dataScript.textContent || '[]');
+  } catch(e) {
+    console.error('Failed to parse equipment data:', e);
+  }
 
-  // Normalize keys
-  const norm = (eq) => ({
-    id: eq.id ?? eq.ID,
-    type: eq.type ?? eq.Type,
-    status: (eq.status ?? eq.Status ?? '').toString().toLowerCase(),
-    health: Number(eq.health ?? eq.Health ?? 0)
-  });
-  const list = Array.isArray(equipmentData) ? equipmentData.map(norm) : [];
-
+  // Calculate statistics
   let operational = 0, warning = 0, totalHealth = 0;
-  list.forEach((eq) => {
-    if (eq.status === 'operational') operational++;
-    else if (eq.status === 'warning') warning++;
-    totalHealth += eq.health;
+  
+  equipment.forEach(function(eq) {
+    const health = eq.health || eq.Health || 0;
+    const status = (eq.status || eq.Status || '').toLowerCase();
+    
+    totalHealth += health;
+    if (status === 'operational') operational++;
+    else if (status === 'warning') warning++;
   });
 
   document.getElementById('operational').textContent = operational;
   document.getElementById('warning').textContent = warning;
-  document.getElementById('avgHealth').textContent =
-    (list.length ? (totalHealth / list.length).toFixed(1) : '0.0') + '%';
+  
+  const avgHealth = equipment.length > 0 ? (totalHealth / equipment.length) : 0;
+  document.getElementById('avgHealth').textContent = avgHealth.toFixed(1) + '%';
 
-  initHealthTrendChart(list);
+  // Initialize chart
+  initHealthTrendChart(equipment);
 });
 
 function initHealthTrendChart(equipment) {
-  const ctx = document.getElementById('healthTrendChart').getContext('2d');
+  const ctx = document.getElementById('healthTrendChart');
+  if (!ctx) return;
 
+  // Generate 30 days of dates
   const days = [];
-  for (let i = 30; i >= 0; i--) {
+  for (let i = 29; i >= 0; i--) {
     const d = new Date();
     d.setDate(d.getDate() - i);
     days.push(d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
   }
 
-  const series = equipment.length ? equipment : [{ id: '—', type: 'No Data', health: 0 }];
+  const datasets = [];
+  const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
 
-  const palette = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
-  const datasets = series.map((eq, idx) => {
-    const data = days.map(() =>
-      Math.max(0, Math.min(100, (eq.health || 0) + (Math.random() * 10 - 5)))
-    );
-    return {
-      label: `${eq.type} (${eq.id})`,
-      data,
-      borderColor: palette[idx % palette.length],
+  equipment.forEach(function(eq, idx) {
+    const baseHealth = eq.health || eq.Health || 0;
+    const data = days.map(function() {
+      return Math.max(0, Math.min(100, baseHealth + (Math.random() * 10 - 5)));
+    });
+
+    datasets.push({
+      label: (eq.type || eq.Type || 'Equipment') + ' (' + (eq.id || eq.ID || eq.equipment_id) + ')',
+      data: data,
+      borderColor: colors[idx % colors.length],
       borderWidth: 2,
       tension: 0.4,
-      fill: false
-    };
+      fill: false,
+      pointRadius: 2
+    });
   });
 
   new Chart(ctx, {
     type: 'line',
-    data: { labels: days, datasets },
+    data: { labels: days, datasets: datasets },
     options: {
-      responsive: true,             // width follows container
-      maintainAspectRatio: false,   // height follows CSS
-      devicePixelRatio: Math.min(window.devicePixelRatio || 1, 1.75),
-      plugins: { legend: { position: 'top' } },
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'top' },
+        tooltip: {
+          callbacks: {
+            label: function(context) {
+              return context.dataset.label + ': ' + context.parsed.y.toFixed(1) + '%';
+            }
+          }
+        }
+      },
       scales: {
-        y: { min: 0, max: 100, title: { display: true, text: 'Health Score (%)' } }
+        y: {
+          min: 0,
+          max: 100,
+          title: { display: true, text: 'Health Score (%)' }
+        }
       }
     }
   });
 }
 
 function scheduleMaintenance(equipmentId) {
-  alert('Scheduling maintenance for equipment: ' + equipmentId);
+  alert('Scheduling maintenance for: ' + equipmentId);
 }
 </script>
 
-{{end}}
+<style>
+.equipment-page {
+  padding: 2rem;
+  max-width: 1600px;
+  margin: 0 auto;
+}
 
-{{template "layout" .}}
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 2rem;
+}
+
+.page-header h1 {
+  margin: 0;
+  font-size: 2rem;
+  color: #0f172a;
+}
+
+.refresh-btn {
+  padding: 0.5rem 1.25rem;
+  background: #3b82f6;
+  color: white;
+  border: none;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  font-weight: 600;
+  transition: background 0.2s;
+}
+
+.refresh-btn:hover {
+  background: #2563eb;
+}
+
+.equipment-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+  gap: 1.5rem;
+  margin: 2rem 0;
+}
+
+.equipment-card {
+  background: white;
+  border-radius: 0.75rem;
+  padding: 1.5rem;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  transition: all 0.2s;
+}
+
+.equipment-card:hover {
+  box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+  transform: translateY(-2px);
+}
+
+.equipment-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  margin-bottom: 1.5rem;
+}
+
+.equipment-header h3 {
+  margin: 0 0 0.25rem 0;
+  font-size: 1.25rem;
+  color: #0f172a;
+}
+
+.equipment-id {
+  font-size: 0.875rem;
+  color: #64748b;
+}
+
+.status-badge {
+  padding: 0.25rem 0.75rem;
+  border-radius: 0.375rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.status-operational {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.status-warning {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.status-critical {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.health-section {
+  margin-bottom: 1.5rem;
+}
+
+.health-label {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+  font-size: 0.875rem;
+  color: #64748b;
+}
+
+.health-label strong {
+  color: #0f172a;
+  font-size: 1rem;
+}
+
+.health-bar {
+  height: 8px;
+  background: #e2e8f0;
+  border-radius: 1rem;
+  overflow: hidden;
+}
+
+.health-fill {
+  height: 100%;
+  transition: width 0.3s;
+}
+
+.health-fill.excellent {
+  background: linear-gradient(90deg, #10b981, #059669);
+}
+
+.health-fill.good {
+  background: linear-gradient(90deg, #3b82f6, #2563eb);
+}
+
+.health-fill.warning {
+  background: linear-gradient(90deg, #f59e0b, #d97706);
+}
+
+.health-fill.critical {
+  background: linear-gradient(90deg, #ef4444, #dc2626);
+}
+
+.equipment-details {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+  padding: 1rem;
+  background: #f8fafc;
+  border-radius: 0.5rem;
+}
+
+.detail-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.detail-label {
+  font-size: 0.75rem;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.detail-value {
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.btn-maintenance {
+  width: 100%;
+  padding: 0.75rem;
+  background: #3b82f6;
+  color: white;
+  border: none;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  font-weight: 600;
+  transition: background 0.2s;
+}
+
+.btn-maintenance:hover {
+  background: #2563eb;
+}
+
+.chart-container {
+  background: white;
+  border-radius: 0.75rem;
+  padding: 2rem;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  height: 400px;
+}
+
+.chart-container h2 {
+  margin: 0 0 1.5rem 0;
+  font-size: 1.25rem;
+  color: #0f172a;
+}
+
+.no-data {
+  text-align: center;
+  padding: 4rem 2rem;
+  background: white;
+  border-radius: 0.75rem;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  margin: 2rem 0;
+}
+
+.no-data p {
+  font-size: 1.25rem;
+  color: #64748b;
+  margin: 0 0 0.5rem 0;
+}
+
+.no-data small {
+  color: #94a3b8;
+}
+</style>
+{{end}}

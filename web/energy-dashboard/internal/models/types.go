@@ -60,3 +60,9 @@ type Equipment struct {
 	Status string  `json:"status"`
 	Health float64 `json:"health"`
 }
+
+type EquipmentResponse struct {
+	FacilityID string      `json:"facility_id"`
+	Count      int         `json:"count"`
+	Equipment  []Equipment `json:"equipment"`
+}

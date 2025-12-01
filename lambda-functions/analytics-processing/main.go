@@ -34,12 +34,11 @@ var (
 )
 
 type Reading struct {
-	FacilityID string  `dynamodbav:"facilityId"`
-	MeterID    string  `dynamodbav:"meterId"`
-	Timestamp  int64   `dynamodbav:"timestamp"`
-	Voltage    float64 `dynamodbav:"voltage"`
-	Current    float64 `dynamodbav:"current"`
-	PowerKW    float64 `dynamodbav:"powerKw"`
+	DeviceID  string  `dynamodbav:"device_id"`
+	Timestamp int64   `dynamodbav:"timestamp"`
+	Voltage   float64 `dynamodbav:"voltage"`
+	Current   float64 `dynamodbav:"current"`
+	PowerKW   float64 `dynamodbav:"power_kw"`
 }
 
 type HourlyData struct {
@@ -96,9 +95,9 @@ func init() {
 	s3Client = s3.NewFromConfig(cfg)
 
 	// Env-driven names with safe defaults
-	tableReadings = getenv("DDB_TABLE_READINGS", "EnergyReadings")
+	tableReadings = getenv("DDB_TABLE_READINGS", "energy-grid-readings")
 	tableAnalytics = getenv("DDB_TABLE_ANALYTICS", "AnalyticsSummaries")
-	s3Bucket = getenv("S3_BUCKET", "energy-grid-reports")
+	s3Bucket = getenv("S3_BUCKET", "smart-energy-grid-reports-nci-2025")
 
 	fmt.Printf("Cold start: ReadingsTable=%s AnalyticsTable=%s S3Bucket=%s\n",
 		tableReadings, tableAnalytics, s3Bucket)
@@ -160,7 +159,7 @@ func fail(code int, err error) (LambdaResponse, error) {
 
 // --- Data access ---
 
-// getReadingsForDate queries all readings for the facility within the day, handling pagination.
+// getReadingsForDate scans all readings for the facility within the day
 func getReadingsForDate(ctx context.Context, facilityID, date string, pageLimit int32) ([]Reading, error) {
 	startOfDay, err := time.Parse("2006-01-02", date)
 	if err != nil {
@@ -179,9 +178,9 @@ func getReadingsForDate(ctx context.Context, facilityID, date string, pageLimit 
 	)
 
 	for {
-		in := &dynamodb.QueryInput{
-			TableName:              aws.String(tableReadings),
-			KeyConditionExpression: aws.String("facilityId = :fid AND #ts BETWEEN :start AND :end"),
+		in := &dynamodb.ScanInput{
+			TableName:         aws.String(tableReadings),
+			FilterExpression:  aws.String("begins_with(device_id, :fid) AND #ts BETWEEN :start AND :end"),
 			ExpressionAttributeNames: map[string]string{
 				"#ts": "timestamp",
 			},
@@ -190,14 +189,13 @@ func getReadingsForDate(ctx context.Context, facilityID, date string, pageLimit 
 				":start": &types.AttributeValueMemberN{Value: strconv.FormatInt(startTS, 10)},
 				":end":   &types.AttributeValueMemberN{Value: strconv.FormatInt(endTS, 10)},
 			},
-			ScanIndexForward:  aws.Bool(true), // oldest -> newest
 			Limit:             aws.Int32(pageLimit),
 			ExclusiveStartKey: exclusive,
 		}
 
-		out, err := dynamoClient.Query(ctx, in)
+		out, err := dynamoClient.Scan(ctx, in)
 		if err != nil {
-			return nil, fmt.Errorf("dynamodb query failed: %w", err)
+			return nil, fmt.Errorf("dynamodb scan failed: %w", err)
 		}
 
 		var page []Reading

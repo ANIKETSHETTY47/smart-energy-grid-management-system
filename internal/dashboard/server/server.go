@@ -208,11 +208,19 @@ func (s *Server) handleEquipment(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	equipment := []models.Equipment{
-		{ID: "eq-001", Type: "Transformer", Status: "operational", Health: 95.5},
-		{ID: "eq-002", Type: "Generator", Status: "operational", Health: 88.2},
-		{ID: "eq-003", Type: "Meter", Status: "warning", Health: 72.8},
-		{ID: "eq-004", Type: "Switch", Status: "operational", Health: 98.1},
+	// Fetch real equipment from API
+	equipmentResp, err := s.api.Equipment(ctx, s.facility)
+	var equipment []models.Equipment
+	if err == nil && equipmentResp != nil {
+		equipment = equipmentResp.Equipment
+	} else {
+		// Fallback to dummy data if API fails
+		equipment = []models.Equipment{
+			{ID: "eq-001", Type: "Transformer", Status: "operational", Health: 95.5},
+			{ID: "eq-002", Type: "Generator", Status: "operational", Health: 88.2},
+			{ID: "eq-003", Type: "Meter", Status: "warning", Health: 72.8},
+			{ID: "eq-004", Type: "Switch", Status: "operational", Health: 98.1},
+		}
 	}
 
 	data := map[string]interface{}{

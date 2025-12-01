@@ -59,16 +59,6 @@ func main() {
 		AllowHeaders: "Origin,Content-Type,Accept,Authorization",
 	}))
 
-	app.Get("/health", func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{
-			"status":  "ok",
-			"service": "smart-energy-grid-api",
-		})
-	})
-
-	// Register API routes
-	httpHandlers.Register(app, svcs)
-
 	// Create dashboard handler
 	dashClient := dashboardAPI.New()
 	dashHandler := dashboardServer.New(
@@ -77,19 +67,26 @@ func main() {
 		dashClient,
 	)
 
-	// Mount static assets first (specific routes before wildcard)
+	// Mount static assets FIRST
 	app.Static("/static", "./web/dashboard/static")
 
-	// Mount dashboard HTML routes using adaptor
-	app.All("/", adaptor.HTTPHandler(dashHandler))
-	app.All("/dashboard", adaptor.HTTPHandler(dashHandler))
-	app.All("/alerts", adaptor.HTTPHandler(dashHandler))
-	app.All("/equipment", adaptor.HTTPHandler(dashHandler))
-	app.All("/analytics", adaptor.HTTPHandler(dashHandler))
+	// Register API routes BEFORE dashboard (they have priority)
+	httpHandlers.Register(app, svcs)
+
+	// Dashboard WebSocket and API stats
 	app.All("/healthz", adaptor.HTTPHandler(dashHandler))
 	app.All("/ws", adaptor.HTTPHandler(dashHandler))
-	app.All("/api/stats", adaptor.HTTPHandler(dashHandler))
-	app.All("/alerts/acknowledge", adaptor.HTTPHandler(dashHandler))
+	app.Get("/api/stats", adaptor.HTTPHandler(dashHandler))
+
+	// Dashboard HTML routes (these come AFTER API routes)
+	app.All("/dashboard", adaptor.HTTPHandler(dashHandler))
+	app.All("/equipment", adaptor.HTTPHandler(dashHandler))
+	app.All("/analytics", adaptor.HTTPHandler(dashHandler))
+	app.All("/alerts", adaptor.HTTPHandler(dashHandler))
+	app.Post("/alerts/acknowledge", adaptor.HTTPHandler(dashHandler))
+	
+	// Root route serves dashboard
+	app.All("/", adaptor.HTTPHandler(dashHandler))
 
 	// Support both API_ADDR and PORT for Elastic Beanstalk
 	addr := viper.GetString("API_ADDR")

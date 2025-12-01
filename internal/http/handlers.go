@@ -59,6 +59,20 @@ func Register(app *fiber.App, svcs *service.Services) {
 		return c.JSON(items)
 	})
 
+	// Equipment endpoint
+	g.Get("equipment", func(c *fiber.Ctx) error {
+		facilityID := c.Query("facility_id", "facility-001")
+		items, err := svcs.Equipment.GetEquipment(facilityID)
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(fiber.Map{
+			"facility_id": facilityID,
+			"count":       len(items),
+			"equipment":   items,
+		})
+	})
+
 	// Trigger daily analytics via Lambda
 	g.Post("analytics/generate", func(c *fiber.Ctx) error {
 		type Request struct {

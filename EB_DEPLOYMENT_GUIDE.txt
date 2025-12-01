@@ -1,0 +1,265 @@
+ELASTIC BEANSTALK DEPLOYMENT GUIDE
+====================================
+
+PREREQUISITES:
+1. AWS CLI installed and configured
+2. EB CLI installed (pip install awsebcli)
+3. Go 1.22+ installed
+4. Git repository initialized
+
+CURRENT STRUCTURE:
+- Main API: cmd/api/main.go (serves both API + Dashboard)
+- Dashboard: Integrated into main API via internal/dashboard
+- Port: Configured via environment variable PORT (AWS sets this automatically)
+
+STEP 1: VERIFY PROJECT STRUCTURE
+---------------------------------
+cd /Users/shetty/Desktop/Sem\ 1\ Projects/Cloud\ Progm/smart-energy-grid-management-system
+
+Your project should have:
+✓ .elasticbeanstalk/config.yml
+✓ Buildfile (for building Go binary)
+✓ Procfile (for running the app)
+✓ .ebextensions/01_environment.config (environment variables)
+
+STEP 2: UPDATE ENVIRONMENT CONFIGURATION
+-----------------------------------------
+Edit .ebextensions/01_environment.config to include ALL required variables:
+
+option_settings:
+  aws:elasticbeanstalk:application:environment:
+    AWS_REGION: eu-north-1
+    AWS_ACCESS_KEY_ID: AKIAVK3PK4IJAZ2HKIPA
+    AWS_SECRET_ACCESS_KEY: 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
+    USE_CLOUD_SERVICES: true
+    FACILITY_ID: facility-001
+    AWS_S3_BUCKET: smart-energy-grid-reports-nci-2025
+    AWS_DYNAMODB_TABLE_READINGS: energy-grid-readings
+    AWS_DYNAMODB_TABLE_ALERTS: energy-grid-alerts
+    AWS_DYNAMODB_TABLE_EQUIPMENT: energy-grid-equipment
+    ENVIRONMENT: production
+
+STEP 3: VERIFY BUILDFILE
+-------------------------
+Buildfile should contain:
+make: go build -o bin/api -ldflags="-s -w" cmd/api/main.go
+
+STEP 4: VERIFY PROCFILE
+-----------------------
+Procfile should contain:
+web: bin/api
+
+STEP 5: BUILD LOCALLY (TEST)
+-----------------------------
+# Test build locally first
+go build -o bin/api cmd/api/main.go
+
+# Test run locally
+export AWS_REGION=eu-north-1
+export AWS_ACCESS_KEY_ID=AKIAVK3PK4IJAZ2HKIPA
+export AWS_SECRET_ACCESS_KEY=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
+export USE_CLOUD_SERVICES=true
+export PORT=8080
+./bin/api
+
+# Should see: "unified api + dashboard listening on :8080"
+# Test: http://localhost:8080
+
+STEP 6: COMMIT LATEST CHANGES
+------------------------------
+git add .
+git commit -m "Fix dashboard, alerts, analytics pages and equipment data loading"
+
+STEP 7: DEPLOY TO ELASTIC BEANSTALK
+------------------------------------
+# Initialize EB (if not already done)
+eb init
+
+# Select:
+# - Region: eu-north-1
+# - Application name: smart-energy-grid-management-system (or your existing one)
+# - Platform: Go
+# - CodeCommit: No
+
+# Deploy to environment
+eb deploy
+
+# This will:
+# 1. Package your application
+# 2. Upload to S3
+# 3. Deploy to Elastic Beanstalk
+# 4. Build the Go binary using Buildfile
+# 5. Start the app using Procfile
+
+STEP 8: CHECK DEPLOYMENT STATUS
+--------------------------------
+# View deployment logs
+eb logs
+
+# Check application health
+eb health
+
+# Open application in browser
+eb open
+
+STEP 9: VERIFY APPLICATION
+---------------------------
+After 'eb open', you should see:
+- Dashboard: Charts with real DynamoDB data
+- Equipment: List of equipment from energy-grid-equipment table
+- Alerts: Clean UI showing alerts from energy-grid-alerts table
+- Analytics: Report generation form
+
+STEP 10: TROUBLESHOOTING
+-------------------------
+If pages still show wrong content:
+
+1. Check EB logs:
+   eb logs --all
+
+2. SSH into instance:
+   eb ssh
+   
+3. Check if templates exist:
+   ls -la web/energy-dashboard/templates/
+   
+4. Restart application:
+   eb restart
+
+5. Check environment variables:
+   eb printenv
+
+6. Set missing environment variables:
+   eb setenv AWS_REGION=eu-north-1
+
+COMMON ISSUES & FIXES:
+----------------------
+Issue: "API offline" status
+Fix: Check AWS credentials in environment variables
+
+Issue: Empty equipment/alerts
+Fix: Verify DynamoDB tables exist and have data:
+   - Run populate-correct-tables.go script
+   - Check AWS region matches (eu-north-1)
+
+Issue: Template rendering errors
+Fix: Ensure all template files are committed to git
+
+Issue: Build fails
+Fix: Check go.mod dependencies and Go version (1.22+)
+
+DEPLOYMENT CHECKLIST:
+--------------------
+□ All template files updated (dashboard, equipment, alerts, analytics)
+□ server.go updated with explicit template loading
+□ Environment variables configured in .ebextensions
+□ Latest code committed to git
+□ Local build test passed
+□ EB initialized with correct region
+□ Deployment completed successfully
+□ All 4 pages show unique content
+□ DynamoDB data displayed correctly
+
+USEFUL EB COMMANDS:
+------------------
+eb deploy              # Deploy current code
+eb logs                # View recent logs
+eb logs --all          # View all logs
+eb ssh                 # SSH into instance  
+eb health              # Check health status
+eb printenv            # Show environment variables
+eb setenv KEY=VALUE    # Set environment variable
+eb restart             # Restart application
+eb terminate           # Terminate environment
+eb open                # Open app in browser
+
+MONITORING:
+----------
+1. CloudWatch Logs: Monitor application logs
+2. EB Health Dashboard: Check application health
+3. API Health Endpoint: http://your-app.elasticbeanstalk.com/health
+
+CURRENT APPLICATION ENDPOINTS:
+-----------------------------
+/                      # Dashboard (root redirects to dashboard)
+/dashboard             # Main dashboard with charts
+/equipment             # Equipment monitoring page
+/alerts                # Alerts management page  
+/analytics             # Analytics and reports page
+/health                # API health check (returns JSON)
+/api/stats             # Real-time stats API
+
+DATA SOURCES:
+------------
+All data comes from DynamoDB in eu-north-1:
+- energy-grid-readings: Power consumption data
+- energy-grid-alerts: System alerts
+- energy-grid-equipment: Equipment inventory
+- AnalyticsSummaries: Daily analytics
+
+ARCHITECTURE:
+------------
+┌─────────────────┐
+│  User Browser   │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────────────────────┐
+│   Elastic Beanstalk Instance    │
+│                                  │
+│  ┌──────────────────────────┐  │
+│  │  Unified Go Application   │  │
+│  │  (API + Dashboard)        │  │
+│  │                           │  │
+│  │  - Serves HTML templates  │  │
+│  │  - Provides REST API      │  │
+│  │  - WebSocket for updates  │  │
+│  └────────┬─────────────────┘  │
+└───────────┼─────────────────────┘
+            │
+            ▼
+    ┌───────────────┐
+    │   DynamoDB    │
+    │  (eu-north-1) │
+    └───────────────┘
+
+POST-DEPLOYMENT VERIFICATION:
+-----------------------------
+1. Visit each page and verify unique content:
+   - Dashboard: Shows power consumption charts
+   - Equipment: Shows equipment cards with health scores
+   - Alerts: Shows alert cards with severity badges
+   - Analytics: Shows report generation form
+
+2. Check data is loading from DynamoDB:
+   - Dashboard should show actual readings, not dummy data
+   - Equipment should show 4-5 items (from populate script)
+   - Alerts should show 50+ alerts
+
+3. Test functionality:
+   - Dashboard charts should render
+   - Equipment health bars should display
+   - Alerts can be acknowledged
+   - Analytics form can be submitted
+
+SUCCESS CRITERIA:
+----------------
+✓ All 4 pages load with unique content
+✓ No template rendering errors
+✓ DynamoDB data displayed correctly
+✓ Charts render properly
+✓ API status shows "online"
+✓ No console errors in browser
+
+ROLLBACK PROCEDURE:
+------------------
+If deployment fails:
+1. eb abort                    # Abort current deployment
+2. git revert HEAD            # Revert last commit
+3. eb deploy                  # Deploy previous version
+
+Or restore from EB console:
+1. Go to Elastic Beanstalk console
+2. Select application
+3. Application versions
+4. Deploy previous version

@@ -21,9 +21,9 @@ type Services struct {
 	Readings    *ReadingService
 	Analytics   *AnalyticsService
 	Alerts      *AlertService
-	Maintenance *MaintenanceService // NEW
+	Maintenance *MaintenanceService
+	Equipment   *EquipmentService
 
-	// Cloud clients
 	DynamoDB *cloud.DynamoDBClient
 	S3       *cloud.S3Client
 	SNS      *cloud.SNSClient
@@ -31,7 +31,7 @@ type Services struct {
 	UseCloud bool
 }
 
-// New creates a new Services instance with cloud integration
+// New creates services with cloud integration
 func New(db *sqlx.DB) (*Services, error) {
 	repos := repository.New(db)
 
@@ -40,7 +40,7 @@ func New(db *sqlx.DB) (*Services, error) {
 		UseCloud: config.UseCloudServices(),
 	}
 
-	// Initialize cloud clients if enabled
+	// Initialize cloud clients
 	if svcs.UseCloud {
 		var err error
 
@@ -59,7 +59,6 @@ func New(db *sqlx.DB) (*Services, error) {
 			return nil, fmt.Errorf("failed to init SNS: %w", err)
 		}
 
-		// Add Lambda client initialization
 		svcs.Lambda, err = cloud.NewLambdaClient(config.AWSRegion())
 		if err != nil {
 			return nil, fmt.Errorf("failed to init Lambda: %w", err)
@@ -92,10 +91,15 @@ func New(db *sqlx.DB) (*Services, error) {
 		sns:      svcs.SNS,
 		useCloud: svcs.UseCloud,
 	}
+	
+	svcs.Equipment = &EquipmentService{
+		dynamoDB: svcs.DynamoDB,
+		useCloud: svcs.UseCloud,
+	}
+	
 	return svcs, nil
 }
 
-// ReadingService handles energy reading operations
 type ReadingService struct {
 	repos    *repository.Repos
 	dynamoDB *cloud.DynamoDBClient
@@ -103,7 +107,7 @@ type ReadingService struct {
 	useCloud bool
 }
 
-// FromMQTT processes MQTT message and stores in appropriate backend
+// FromMQTT processes MQTT message and stores reading
 func (s *ReadingService) FromMQTT(topic string, payload []byte) error {
 	var r struct {
 		MeterID   string    `json:"meter_id"`
@@ -116,7 +120,7 @@ func (s *ReadingService) FromMQTT(topic string, payload []byte) error {
 		return err
 	}
 
-	// Parse meter ID to int64
+	// Parse meter ID
 	var meterIDInt int64 = 1
 	if r.MeterID != "" {
 		parsed, err := strconv.ParseInt(r.MeterID, 10, 64)
@@ -133,13 +137,13 @@ func (s *ReadingService) FromMQTT(topic string, payload []byte) error {
 		PowerKW:   r.PowerKW,
 	}
 
-	// Store in cloud if enabled
+	// Store in cloud
 	if s.useCloud && s.dynamoDB != nil {
 		if err := s.dynamoDB.PutReading(rd, "facility-001"); err != nil {
 			return err
 		}
 
-		// Optionally invoke Lambda for immediate anomaly detection
+		// Invoke Lambda for anomaly detection
 		if s.lambda != nil {
 			payload := cloud.AnomalyDetectionPayload{
 				FacilityID: "facility-001",
@@ -150,7 +154,6 @@ func (s *ReadingService) FromMQTT(topic string, payload []byte) error {
 				PowerKW:    r.PowerKW,
 			}
 
-			// Invoke asynchronously (fire and forget)
 			go func() {
 				_, err := s.lambda.InvokeAnomalyDetection(payload)
 				if err != nil {
@@ -165,17 +168,15 @@ func (s *ReadingService) FromMQTT(topic string, payload []byte) error {
 	return s.repos.InsertReading(rd)
 }
 
-// GetRecentReadings retrieves recent readings for a meter
+// GetRecentReadings retrieves recent readings
 func (s *ReadingService) GetRecentReadings(facilityID string, duration time.Duration) ([]domain.Reading, error) {
 	if s.useCloud && s.dynamoDB != nil {
 		return s.dynamoDB.GetRecentReadings(facilityID, duration)
 	}
 
-	// Fallback to local DB (implement this in repository if needed)
 	return []domain.Reading{}, fmt.Errorf("local DB reading retrieval not implemented")
 }
 
-// AnalyticsService handles analytics and reporting operations
 type AnalyticsService struct {
 	repos    *repository.Repos
 	dynamoDB *cloud.DynamoDBClient
@@ -184,7 +185,6 @@ type AnalyticsService struct {
 	useCloud bool
 }
 
-// DailySummary represents daily energy consumption summary
 type DailySummary struct {
 	Date                time.Time `json:"date"`
 	TotalConsumption    float64   `json:"total_consumption"`
@@ -206,7 +206,7 @@ func (s *AnalyticsService) GetDailySummary(facilityID string, date time.Time) (*
 		return &DailySummary{Date: date}, nil
 	}
 
-	// YOUR ORIGINAL CONTRIBUTION: Convert readings to aggregator points
+	// Convert readings to points
 	points := make([]aggregator.Point, len(readings))
 	for i, r := range readings {
 		points[i] = aggregator.Point{
@@ -215,15 +215,13 @@ func (s *AnalyticsService) GetDailySummary(facilityID string, date time.Time) (*
 		}
 	}
 
-	// YOUR ORIGINAL CONTRIBUTION: Use library's aggregation functions
+	// Calculate aggregations
 	totalConsumption := aggregator.Sum(points)
 	averagePower := aggregator.Average(points)
 
-	// YOUR ORIGINAL CONTRIBUTION: Use converter for unit conversions
+	// Convert units
 	conv := &converter.EnergyConverter{}
 	totalConsumptionMWh := conv.KWhToMWh(totalConsumption)
-
-	// YOUR ORIGINAL CONTRIBUTION: Calculate efficiency
 	efficiency := conv.CalculateEfficiency(totalConsumption, averagePower*float64(len(readings)))
 
 	summary := &DailySummary{
@@ -248,29 +246,27 @@ func (s *AnalyticsService) findPeakPower(points []aggregator.Point) float64 {
 	}
 	return peak
 }
+
 func (s *AnalyticsService) getReadingsForDate(facilityID string, date time.Time) ([]domain.Reading, error) {
 	if s.useCloud && s.dynamoDB != nil {
 		return s.dynamoDB.GetRecentReadings(facilityID, 24*time.Hour)
 	}
 
-	// Fallback to local DB
 	return []domain.Reading{}, nil
 }
 
-// GenerateDailyReport generates daily analytics report using Lambda
-// YOUR ORIGINAL CONTRIBUTION: Leverage serverless computing for report generation
+// GenerateDailyReport generates report using Lambda
 func (s *AnalyticsService) GenerateDailyReport(facilityID, date string) (string, error) {
 	if !s.useCloud || s.lambda == nil {
 		return "", fmt.Errorf("cloud services not enabled")
 	}
 
-	// Invoke Lambda function to process analytics
 	result, err := s.lambda.InvokeAnalyticsProcessing(date, facilityID)
 	if err != nil {
 		return "", fmt.Errorf("failed to invoke analytics Lambda: %w", err)
 	}
 
-	// Extract report URL from response
+	// Extract report URL
 	if body, ok := result["body"].(map[string]interface{}); ok {
 		if reportURL, ok := body["report_url"].(string); ok {
 			return reportURL, nil
@@ -280,31 +276,25 @@ func (s *AnalyticsService) GenerateDailyReport(facilityID, date string) (string,
 	return "", fmt.Errorf("no report URL in response")
 }
 
-// ScheduleDailyAnalytics triggers daily analytics processing asynchronously
-// YOUR ORIGINAL CONTRIBUTION: Background job processing using serverless
+// ScheduleDailyAnalytics triggers analytics processing
 func (s *AnalyticsService) ScheduleDailyAnalytics(facilityID string) error {
 	if !s.useCloud || s.lambda == nil {
 		return fmt.Errorf("cloud services not enabled")
 	}
 
-	// Use yesterday's date
 	yesterday := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
-
-	// Invoke asynchronously
 	return s.lambda.InvokeAnalyticsAsync(yesterday, facilityID)
 }
 
-// GenerateReport generates and stores a report (using S3 directly)
+// GenerateReport generates and stores report in S3
 func (s *AnalyticsService) GenerateReport(facilityID string, startDate, endDate time.Time) (string, error) {
 	if !s.useCloud || s.s3 == nil {
 		return "", fmt.Errorf("cloud services not enabled")
 	}
 
-	// Generate report data
 	reportData := fmt.Sprintf("Energy Report for %s\nPeriod: %s to %s\n",
 		facilityID, startDate.Format("2006-01-02"), endDate.Format("2006-01-02"))
 
-	// Upload to S3
 	key := fmt.Sprintf("reports/%s/%s.txt", facilityID, time.Now().Format("20060102-150405"))
 	url, err := s.s3.UploadReport(key, []byte(reportData), "text/plain")
 	if err != nil {
@@ -314,7 +304,6 @@ func (s *AnalyticsService) GenerateReport(facilityID string, startDate, endDate 
 	return url, nil
 }
 
-// AlertService handles alert operations
 type AlertService struct {
 	repos    *repository.Repos
 	dynamoDB *cloud.DynamoDBClient
@@ -329,11 +318,10 @@ func (s *AlertService) CreateAlert(facilityID, equipmentID, severity, alertType,
 			return fmt.Errorf("failed to create alert in DynamoDB: %w", err)
 		}
 
-		// Send notification if SNS is available
+		// Send SNS notification
 		if s.sns != nil {
 			subject := fmt.Sprintf("[%s] %s Alert", severity, alertType)
 			if err := s.sns.SendAlert(subject, message); err != nil {
-				// Log error but don't fail - alert is already stored
 				fmt.Printf("Failed to send SNS notification: %v\n", err)
 			}
 		}
@@ -341,11 +329,10 @@ func (s *AlertService) CreateAlert(facilityID, equipmentID, severity, alertType,
 		return nil
 	}
 
-	// Fallback to local DB (implement this in repository if needed)
 	return fmt.Errorf("local alert storage not implemented")
 }
 
-// GetAlerts retrieves alerts for a facility
+// GetAlerts retrieves alerts
 func (s *AlertService) GetAlerts(facilityID string, severityFilter *string) ([]cloud.Alert, error) {
 	if s.useCloud && s.dynamoDB != nil {
 		return s.dynamoDB.GetAlerts(facilityID, severityFilter)
@@ -354,7 +341,7 @@ func (s *AlertService) GetAlerts(facilityID string, severityFilter *string) ([]c
 	return []cloud.Alert{}, fmt.Errorf("local alert retrieval not implemented")
 }
 
-// AcknowledgeAlert marks an alert as acknowledged
+// AcknowledgeAlert marks alert as acknowledged
 func (s *AlertService) AcknowledgeAlert(alertID string) error {
 	if s.useCloud && s.dynamoDB != nil {
 		return s.dynamoDB.AcknowledgeAlert(alertID)
@@ -363,9 +350,8 @@ func (s *AlertService) AcknowledgeAlert(alertID string) error {
 	return fmt.Errorf("local alert acknowledgment not implemented")
 }
 
-// DetectAnomalies analyzes readings and creates alerts for anomalies
+// DetectAnomalies analyzes readings and creates alerts
 func (s *AlertService) DetectAnomalies(facilityID string, readings []domain.Reading) error {
-	// Simple anomaly detection: flag readings with unusual power consumption
 	var sum float64
 	for _, r := range readings {
 		sum += r.PowerKW
@@ -376,7 +362,7 @@ func (s *AlertService) DetectAnomalies(facilityID string, readings []domain.Read
 	}
 
 	avg := sum / float64(len(readings))
-	threshold := avg * 1.5 // 50% above average
+	threshold := avg * 1.5
 
 	for _, r := range readings {
 		if r.PowerKW > threshold {
@@ -389,7 +375,7 @@ func (s *AlertService) DetectAnomalies(facilityID string, readings []domain.Read
 				return fmt.Errorf("failed to create anomaly alert: %w", err)
 			}
 
-			// Send SNS notification if available
+			// Send SNS notification
 			if s.useCloud && s.sns != nil {
 				s.sns.SendAnomalyAlert(facilityID, fmt.Sprintf("meter-%d", r.MeterID),
 					r.PowerKW, deviation)
@@ -398,4 +384,19 @@ func (s *AlertService) DetectAnomalies(facilityID string, readings []domain.Read
 	}
 
 	return nil
+}
+
+
+type EquipmentService struct {
+	dynamoDB *cloud.DynamoDBClient
+	useCloud bool
+}
+
+// GetEquipment retrieves all equipment for a facility
+func (s *EquipmentService) GetEquipment(facilityID string) ([]cloud.Equipment, error) {
+	if s.useCloud && s.dynamoDB != nil {
+		return s.dynamoDB.GetEquipment(facilityID)
+	}
+
+	return []cloud.Equipment{}, fmt.Errorf("local equipment retrieval not implemented")
 }

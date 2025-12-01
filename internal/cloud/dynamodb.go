@@ -3,6 +3,7 @@ package cloud
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -21,11 +22,9 @@ type DynamoDBClient struct {
 }
 
 // NewDynamoDBClient creates a new DynamoDB client instance
-// YOUR ORIGINAL CONTRIBUTION: Initialize DynamoDB client with AWS SDK v2
 func NewDynamoDBClient(region string) (*DynamoDBClient, error) {
 	ctx := context.Background()
 
-	// Load AWS configuration from environment/credentials
 	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
 	if err != nil {
 		return nil, fmt.Errorf("unable to load SDK config: %w", err)
@@ -37,42 +36,36 @@ func NewDynamoDBClient(region string) (*DynamoDBClient, error) {
 	}, nil
 }
 
-// Reading represents the DynamoDB structure for energy readings
+// Reading represents the DynamoDB structure for energy readings (actual structure in DB)
 type Reading struct {
-	FacilityID  string  `dynamodbav:"facilityId"`
+	DeviceID    string  `dynamodbav:"device_id"`
 	Timestamp   int64   `dynamodbav:"timestamp"`
-	MeterID     string  `dynamodbav:"meterId"`
 	Voltage     float64 `dynamodbav:"voltage"`
 	Current     float64 `dynamodbav:"current"`
-	PowerKW     float64 `dynamodbav:"powerKw"`
-	Status      string  `dynamodbav:"status"`
-	Temperature float64 `dynamodbav:"temperature"`
+	PowerKW     float64 `dynamodbav:"power_kw"`
+	Temperature float64 `dynamodbav:"temperature,omitempty"`
+	Status      string  `dynamodbav:"status,omitempty"`
 }
 
 // PutReading stores an energy reading in DynamoDB
-// YOUR ORIGINAL CONTRIBUTION: Store reading with proper type conversion and error handling
 func (c *DynamoDBClient) PutReading(reading *domain.Reading, facilityID string) error {
-	// Convert domain.Reading to DynamoDB Reading structure
+	deviceID := fmt.Sprintf("%s-meter-%d", facilityID, reading.MeterID)
 	dbReading := Reading{
-		FacilityID:  facilityID,
-		Timestamp:   reading.Timestamp.Unix(),
-		MeterID:     fmt.Sprintf("%d", reading.MeterID),
-		Voltage:     reading.Voltage,
-		Current:     reading.Current,
-		PowerKW:     reading.PowerKW,
-		Status:      "operational",
-		Temperature: 45.0, // Default value, can be updated based on your domain model
+		DeviceID:  deviceID,
+		Timestamp: reading.Timestamp.Unix(),
+		Voltage:   reading.Voltage,
+		Current:   reading.Current,
+		PowerKW:   reading.PowerKW,
+		Status:    "operational",
 	}
 
-	// Marshal the reading into DynamoDB attribute values
 	item, err := attributevalue.MarshalMap(dbReading)
 	if err != nil {
 		return fmt.Errorf("failed to marshal reading: %w", err)
 	}
 
-	// Put item into DynamoDB table
 	input := &dynamodb.PutItemInput{
-		TableName: aws.String("EnergyReadings"),
+		TableName: aws.String("energy-grid-readings"),
 		Item:      item,
 	}
 
@@ -84,30 +77,27 @@ func (c *DynamoDBClient) PutReading(reading *domain.Reading, facilityID string) 
 	return nil
 }
 
-// GetRecentReadings retrieves recent readings for a facility
-// YOUR ORIGINAL CONTRIBUTION: Query DynamoDB with time-based filtering
+// GetRecentReadings retrieves recent readings for a facility (supports ANY device_id format)
 func (c *DynamoDBClient) GetRecentReadings(facilityID string, duration time.Duration) ([]domain.Reading, error) {
 	startTime := time.Now().Add(-duration).Unix()
 
-	// Query DynamoDB for readings within time range
-	input := &dynamodb.QueryInput{
-		TableName:              aws.String("EnergyReadings"),
-		KeyConditionExpression: aws.String("facilityId = :fid AND #ts > :startTime"),
+	// Scan all items with timestamp filter (works with device-001, device-002, etc.)
+	input := &dynamodb.ScanInput{
+		TableName:        aws.String("energy-grid-readings"),
+		FilterExpression: aws.String("#ts > :startTime"),
 		ExpressionAttributeNames: map[string]string{
 			"#ts": "timestamp",
 		},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":fid":       &types.AttributeValueMemberS{Value: facilityID},
 			":startTime": &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", startTime)},
 		},
 	}
 
-	result, err := c.svc.Query(c.ctx, input)
+	result, err := c.svc.Scan(c.ctx, input)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query DynamoDB: %w", err)
+		return nil, fmt.Errorf("failed to scan DynamoDB: %w", err)
 	}
 
-	// Unmarshal results into domain.Reading slice
 	var dbReadings []Reading
 	err = attributevalue.UnmarshalListOfMaps(result.Items, &dbReadings)
 	if err != nil {
@@ -115,18 +105,25 @@ func (c *DynamoDBClient) GetRecentReadings(facilityID string, duration time.Dura
 	}
 
 	// Convert to domain.Reading format
-	readings := make([]domain.Reading, len(dbReadings))
-	for i, r := range dbReadings {
-		meterID := int64(0)
-		fmt.Sscanf(r.MeterID, "%d", &meterID)
+	readings := make([]domain.Reading, 0, len(dbReadings))
+	for _, r := range dbReadings {
+		// Extract meter ID from device_id (supports: device-001, device-002, facility-001-meter-1, etc.)
+		meterID := int64(1)
+		
+		// Try facility-meter format first
+		_, err := fmt.Sscanf(r.DeviceID, facilityID+"-meter-%d", &meterID)
+		if err != nil {
+			// Try device-XXX format
+			_, err = fmt.Sscanf(r.DeviceID, "device-%d", &meterID)
+		}
 
-		readings[i] = domain.Reading{
+		readings = append(readings, domain.Reading{
 			MeterID:   meterID,
 			Timestamp: time.Unix(r.Timestamp, 0),
 			Voltage:   r.Voltage,
 			Current:   r.Current,
 			PowerKW:   r.PowerKW,
-		}
+		})
 	}
 
 	return readings, nil
@@ -134,28 +131,30 @@ func (c *DynamoDBClient) GetRecentReadings(facilityID string, duration time.Dura
 
 // Alert represents an alert stored in DynamoDB
 type Alert struct {
-	AlertID      string `dynamodbav:"alertId"`
-	FacilityID   string `dynamodbav:"facilityId"`
-	Timestamp    int64  `dynamodbav:"timestamp"`
-	Severity     string `dynamodbav:"severity"`
-	Type         string `dynamodbav:"type"`
-	Message      string `dynamodbav:"message"`
-	Acknowledged bool   `dynamodbav:"acknowledged"`
-	EquipmentID  string `dynamodbav:"equipmentId"`
+	AlertID      string                 `dynamodbav:"alert_id" json:"alert_id"`
+	CreatedAt    int64                  `dynamodbav:"created_at" json:"created_at"`
+	FacilityID   string                 `dynamodbav:"facility_id,omitempty" json:"facility_id"`
+	Severity     string                 `dynamodbav:"severity" json:"severity"`
+	Type         string                 `dynamodbav:"type" json:"type"`
+	Message      string                 `dynamodbav:"message" json:"message"`
+	Acknowledged bool                   `dynamodbav:"acknowledged" json:"acknowledged"`
+	EquipmentID  string                 `dynamodbav:"equipment_id" json:"equipment_id"`
+	Metadata     map[string]interface{} `dynamodbav:"metadata,omitempty" json:"metadata,omitempty"`
+	Timestamp    int64                  `json:"timestamp"` // For frontend compatibility
 }
 
 // CreateAlert stores a new alert in DynamoDB
-// YOUR ORIGINAL CONTRIBUTION: Create alert with auto-generated ID
 func (c *DynamoDBClient) CreateAlert(facilityID, equipmentID, severity, alertType, message string) error {
 	alert := Alert{
-		AlertID:      fmt.Sprintf("alert-%d-%d", time.Now().Unix(), time.Now().Nanosecond()),
+		AlertID:      fmt.Sprintf("alert-%d", time.Now().UnixNano()),
+		CreatedAt:    time.Now().Unix(),
 		FacilityID:   facilityID,
-		Timestamp:    time.Now().Unix(),
 		Severity:     severity,
 		Type:         alertType,
 		Message:      message,
 		Acknowledged: false,
 		EquipmentID:  equipmentID,
+		Timestamp:    time.Now().Unix(),
 	}
 
 	item, err := attributevalue.MarshalMap(alert)
@@ -164,7 +163,7 @@ func (c *DynamoDBClient) CreateAlert(facilityID, equipmentID, severity, alertTyp
 	}
 
 	input := &dynamodb.PutItemInput{
-		TableName: aws.String("Alerts"),
+		TableName: aws.String("energy-grid-alerts"),
 		Item:      item,
 	}
 
@@ -176,28 +175,23 @@ func (c *DynamoDBClient) CreateAlert(facilityID, equipmentID, severity, alertTyp
 	return nil
 }
 
-// GetAlerts retrieves alerts for a facility
-// YOUR ORIGINAL CONTRIBUTION: Query alerts with optional severity filter
+// GetAlerts retrieves alerts (works without facility_id filter)
 func (c *DynamoDBClient) GetAlerts(facilityID string, severityFilter *string) ([]Alert, error) {
-	input := &dynamodb.QueryInput{
-		TableName:              aws.String("Alerts"),
-		IndexName:              aws.String("facilityId-timestamp-index"),
-		KeyConditionExpression: aws.String("facilityId = :fid"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":fid": &types.AttributeValueMemberS{Value: facilityID},
-		},
-		ScanIndexForward: aws.Bool(false), // Sort descending (newest first)
+	input := &dynamodb.ScanInput{
+		TableName: aws.String("energy-grid-alerts"),
 	}
 
 	// Add severity filter if provided
-	if severityFilter != nil {
+	if severityFilter != nil && *severityFilter != "" {
 		input.FilterExpression = aws.String("severity = :sev")
-		input.ExpressionAttributeValues[":sev"] = &types.AttributeValueMemberS{Value: *severityFilter}
+		input.ExpressionAttributeValues = map[string]types.AttributeValue{
+			":sev": &types.AttributeValueMemberS{Value: *severityFilter},
+		}
 	}
 
-	result, err := c.svc.Query(c.ctx, input)
+	result, err := c.svc.Scan(c.ctx, input)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query alerts: %w", err)
+		return nil, fmt.Errorf("failed to scan alerts: %w", err)
 	}
 
 	var alerts []Alert
@@ -206,21 +200,27 @@ func (c *DynamoDBClient) GetAlerts(facilityID string, severityFilter *string) ([
 		return nil, fmt.Errorf("failed to unmarshal alerts: %w", err)
 	}
 
+	// Set Timestamp field for frontend
+	for i := range alerts {
+		alerts[i].Timestamp = alerts[i].CreatedAt
+		if alerts[i].FacilityID == "" {
+			alerts[i].FacilityID = "facility-001"
+		}
+	}
+
 	return alerts, nil
 }
 
 // AcknowledgeAlert marks an alert as acknowledged
-// YOUR ORIGINAL CONTRIBUTION: Update alert status with timestamp
 func (c *DynamoDBClient) AcknowledgeAlert(alertID string) error {
 	input := &dynamodb.UpdateItemInput{
-		TableName: aws.String("Alerts"),
+		TableName: aws.String("energy-grid-alerts"),
 		Key: map[string]types.AttributeValue{
-			"alertId": &types.AttributeValueMemberS{Value: alertID},
+			"alert_id": &types.AttributeValueMemberS{Value: alertID},
 		},
-		UpdateExpression: aws.String("SET acknowledged = :ack, acknowledgedAt = :time"),
+		UpdateExpression: aws.String("SET acknowledged = :ack"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":ack":  &types.AttributeValueMemberBOOL{Value: true},
-			":time": &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", time.Now().Unix())},
+			":ack": &types.AttributeValueMemberBOOL{Value: true},
 		},
 	}
 
@@ -234,29 +234,24 @@ func (c *DynamoDBClient) AcknowledgeAlert(alertID string) error {
 
 // Equipment represents equipment data in DynamoDB
 type Equipment struct {
-	EquipmentID     string  `dynamodbav:"equipmentId"`
-	FacilityID      string  `dynamodbav:"facilityId"`
-	Type            string  `dynamodbav:"type"`
-	InstallDate     int64   `dynamodbav:"installDate"`
-	LastMaintenance int64   `dynamodbav:"lastMaintenance"`
-	HealthScore     float64 `dynamodbav:"healthScore"`
+	EquipmentID     string  `dynamodbav:"equipment_id" json:"id"`
+	FacilityID      string  `dynamodbav:"facility_id,omitempty" json:"facility_id"`
+	Type            string  `dynamodbav:"type" json:"type"`
+	Status          string  `dynamodbav:"status" json:"status"`
+	InstallDate     int64   `dynamodbav:"install_date" json:"install_date"`
+	LastMaintenance int64   `dynamodbav:"last_maintenance" json:"last_maintenance"`
+	HealthScore     float64 `dynamodbav:"health_score" json:"health"`
 }
 
-// GetEquipment retrieves all equipment for a facility
-// YOUR ORIGINAL CONTRIBUTION: Query equipment with GSI
+// GetEquipment retrieves all equipment
 func (c *DynamoDBClient) GetEquipment(facilityID string) ([]Equipment, error) {
-	input := &dynamodb.QueryInput{
-		TableName:              aws.String("Equipment"),
-		IndexName:              aws.String("facilityId-index"),
-		KeyConditionExpression: aws.String("facilityId = :fid"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":fid": &types.AttributeValueMemberS{Value: facilityID},
-		},
+	input := &dynamodb.ScanInput{
+		TableName: aws.String("energy-grid-equipment"),
 	}
 
-	result, err := c.svc.Query(c.ctx, input)
+	result, err := c.svc.Scan(c.ctx, input)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query equipment: %w", err)
+		return nil, fmt.Errorf("failed to scan equipment: %w", err)
 	}
 
 	var equipment []Equipment
@@ -265,20 +260,26 @@ func (c *DynamoDBClient) GetEquipment(facilityID string) ([]Equipment, error) {
 		return nil, fmt.Errorf("failed to unmarshal equipment: %w", err)
 	}
 
+	// Set facility_id if missing
+	for i := range equipment {
+		if equipment[i].FacilityID == "" {
+			equipment[i].FacilityID = "facility-001"
+		}
+	}
+
 	return equipment, nil
 }
 
 // UpdateEquipmentHealth updates the health score of equipment
-// YOUR ORIGINAL CONTRIBUTION: Update equipment health with timestamp
 func (c *DynamoDBClient) UpdateEquipmentHealth(equipmentID string, healthScore float64) error {
 	input := &dynamodb.UpdateItemInput{
-		TableName: aws.String("Equipment"),
+		TableName: aws.String("energy-grid-equipment"),
 		Key: map[string]types.AttributeValue{
-			"equipmentId": &types.AttributeValueMemberS{Value: equipmentID},
+			"equipment_id": &types.AttributeValueMemberS{Value: equipmentID},
 		},
-		UpdateExpression: aws.String("SET healthScore = :score, lastChecked = :time"),
+		UpdateExpression: aws.String("SET health_score = :score, last_checked = :time"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":score": &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", healthScore)},
+			":score": &types.AttributeValueMemberN{Value: strconv.FormatFloat(healthScore, 'f', 2, 64)},
 			":time":  &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", time.Now().Unix())},
 		},
 	}
@@ -292,9 +293,8 @@ func (c *DynamoDBClient) UpdateEquipmentHealth(equipmentID string, healthScore f
 }
 
 // BatchPutReadings stores multiple readings efficiently
-// YOUR ORIGINAL CONTRIBUTION: Batch write for performance optimization
 func (c *DynamoDBClient) BatchPutReadings(readings []domain.Reading, facilityID string) error {
-	const batchSize = 25 // DynamoDB batch write limit
+	const batchSize = 25
 
 	for i := 0; i < len(readings); i += batchSize {
 		end := i + batchSize
@@ -306,15 +306,14 @@ func (c *DynamoDBClient) BatchPutReadings(readings []domain.Reading, facilityID 
 		writeRequests := make([]types.WriteRequest, len(batch))
 
 		for j, reading := range batch {
+			deviceID := fmt.Sprintf("%s-meter-%d", facilityID, reading.MeterID)
 			dbReading := Reading{
-				FacilityID:  facilityID,
-				Timestamp:   reading.Timestamp.Unix(),
-				MeterID:     fmt.Sprintf("%d", reading.MeterID),
-				Voltage:     reading.Voltage,
-				Current:     reading.Current,
-				PowerKW:     reading.PowerKW,
-				Status:      "operational",
-				Temperature: 45.0,
+				DeviceID:  deviceID,
+				Timestamp: reading.Timestamp.Unix(),
+				Voltage:   reading.Voltage,
+				Current:   reading.Current,
+				PowerKW:   reading.PowerKW,
+				Status:    "operational",
 			}
 
 			item, err := attributevalue.MarshalMap(dbReading)
@@ -331,7 +330,7 @@ func (c *DynamoDBClient) BatchPutReadings(readings []domain.Reading, facilityID 
 
 		input := &dynamodb.BatchWriteItemInput{
 			RequestItems: map[string][]types.WriteRequest{
-				"EnergyReadings": writeRequests,
+				"energy-grid-readings": writeRequests,
 			},
 		}
 

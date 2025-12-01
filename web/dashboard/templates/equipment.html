@@ -45,7 +45,7 @@
       <div class="equipment-header">
         <div class="equipment-title">
           <h3>{{.Type}}</h3>
-          <span class="equipment-id">{{.ID}}</span>
+          <span class="equipment-id">{{if .EquipmentID}}{{.EquipmentID}}{{else}}{{.ID}}{{end}}</span>
         </div>
         <span class="equipment-status {{.Status}}">{{.Status}}</span>
       </div>
@@ -53,11 +53,13 @@
       <div class="health-indicator">
         <div class="health-label">
           <span>Health Score</span>
-          <strong>{{printf "%.1f" .Health}}%</strong>
+          <strong>{{if .HealthScore}}{{printf "%.1f" .HealthScore}}{{else}}{{printf "%.1f" .Health}}{{end}}%</strong>
         </div>
         <div class="health-bar">
-          <div class="health-fill {{if gt .Health 90.0}}excellent{{else if gt .Health 75.0}}good{{else if gt .Health 60.0}}warning{{else}}critical{{end}}" 
-               data-health="{{.Health}}"></div>
+          {{$health := 0.0}}
+          {{if .HealthScore}}{{$health = .HealthScore}}{{else}}{{$health = .Health}}{{end}}
+          <div class="health-fill {{if gt $health 90.0}}excellent{{else if gt $health 75.0}}good{{else if gt $health 60.0}}warning{{else}}critical{{end}}" 
+               data-health="{{$health}}"></div>
         </div>
       </div>
 
@@ -73,7 +75,7 @@
       </div>
 
       <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #e2e8f0;">
-        <button class="btn-acknowledge" onclick="scheduleMaintenance('{{.ID}}')">
+        <button class="btn-acknowledge" onclick="scheduleMaintenance('{{if .EquipmentID}}{{.EquipmentID}}{{else}}{{.ID}}{{end}}')">
           Schedule Maintenance
         </button>
       </div>
