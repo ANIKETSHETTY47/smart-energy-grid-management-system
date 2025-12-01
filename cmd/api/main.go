@@ -20,6 +20,14 @@ import (
 	"github.com/spf13/viper"
 )
 
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return false
+	}
+	return err == nil && info.IsDir()
+}
+
 func main() {
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
 
@@ -59,34 +67,45 @@ func main() {
 		AllowHeaders: "Origin,Content-Type,Accept,Authorization",
 	}))
 
-	// Create dashboard handler
-	dashClient := dashboardAPI.New()
-	dashHandler := dashboardServer.New(
-		"./web/dashboard/static",
-		"./web/dashboard/templates",
-		dashClient,
-	)
-
-	// Mount static assets FIRST
-	app.Static("/static", "./web/dashboard/static")
-
-	// Register API routes BEFORE dashboard (they have priority)
+	// Register API routes
 	httpHandlers.Register(app, svcs)
 
-	// Dashboard WebSocket and API stats
-	app.All("/healthz", adaptor.HTTPHandler(dashHandler))
-	app.All("/ws", adaptor.HTTPHandler(dashHandler))
-	app.Get("/api/stats", adaptor.HTTPHandler(dashHandler))
-
-	// Dashboard HTML routes (these come AFTER API routes)
-	app.All("/dashboard", adaptor.HTTPHandler(dashHandler))
-	app.All("/equipment", adaptor.HTTPHandler(dashHandler))
-	app.All("/analytics", adaptor.HTTPHandler(dashHandler))
-	app.All("/alerts", adaptor.HTTPHandler(dashHandler))
-	app.Post("/alerts/acknowledge", adaptor.HTTPHandler(dashHandler))
+	// Check if dashboard files exist
+	dashboardExists := fileExists("./web/dashboard/static")
 	
-	// Root route serves dashboard
-	app.All("/", adaptor.HTTPHandler(dashHandler))
+	if dashboardExists {
+		// Create dashboard handler only if files exist
+		dashClient := dashboardAPI.New()
+		dashHandler := dashboardServer.New(
+			"./web/dashboard/static",
+			"./web/dashboard/templates",
+			dashClient,
+		)
+
+		// Mount static assets
+		app.Static("/static", "./web/dashboard/static")
+
+		// Dashboard WebSocket and API stats
+		app.All("/healthz", adaptor.HTTPHandler(dashHandler))
+		app.All("/ws", adaptor.HTTPHandler(dashHandler))
+		app.Get("/api/stats", adaptor.HTTPHandler(dashHandler))
+
+		// Dashboard HTML routes
+		app.All("/dashboard", adaptor.HTTPHandler(dashHandler))
+		app.All("/equipment", adaptor.HTTPHandler(dashHandler))
+		app.All("/analytics", adaptor.HTTPHandler(dashHandler))
+		app.All("/alerts", adaptor.HTTPHandler(dashHandler))
+		app.Post("/alerts/acknowledge", adaptor.HTTPHandler(dashHandler))
+		
+		log.Info().Msg("Dashboard routes enabled")
+	} else {
+		// Fallback routes when dashboard is not deployed
+		app.Get("/healthz", func(c *fiber.Ctx) error {
+			return c.JSON(fiber.Map{"status": "healthy", "service": "smart-energy-grid-api"})
+		})
+		
+		log.Info().Msg("Running in API-only mode (dashboard not deployed)")
+	}
 
 	// Support both API_ADDR and PORT for Elastic Beanstalk
 	addr := viper.GetString("API_ADDR")
