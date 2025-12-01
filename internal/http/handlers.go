@@ -11,7 +11,7 @@ import (
 func Register(app *fiber.App, svcs *service.Services) {
 	g := app.Group("/")
 
-	// NEW: Root + health
+	// vibe check endpoint
 	g.Get("/", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{
 			"service": "smart-energy-grid-api",
@@ -31,7 +31,7 @@ func Register(app *fiber.App, svcs *service.Services) {
 	g.Get("health", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "ok", "time": time.Now().UTC()})
 	})
-	// NEW: Predictive maintenance endpoint
+	// predict when stuff breaks fr fr
 	g.Get("equipment/:id/maintenance", func(c *fiber.Ctx) error {
 		equipmentID := c.Params("id")
 
@@ -42,7 +42,7 @@ func Register(app *fiber.App, svcs *service.Services) {
 
 		return c.JSON(prediction)
 	})
-	// Existing handlers
+	// get all the facilities
 	g.Get("facilities", func(c *fiber.Ctx) error {
 		items, err := svcs.Repos.ListFacilities()
 		if err != nil {
@@ -59,7 +59,7 @@ func Register(app *fiber.App, svcs *service.Services) {
 		return c.JSON(items)
 	})
 
-	// Equipment endpoint
+	// get the equipment roster
 	g.Get("equipment", func(c *fiber.Ctx) error {
 		facilityID := c.Query("facility_id", "facility-001")
 		items, err := svcs.Equipment.GetEquipment(facilityID)
@@ -73,7 +73,7 @@ func Register(app *fiber.App, svcs *service.Services) {
 		})
 	})
 
-	// Trigger daily analytics via Lambda
+	// cook up some analytics with Lambda
 	g.Post("analytics/generate", func(c *fiber.Ctx) error {
 		type Request struct {
 			FacilityID string `json:"facility_id"`

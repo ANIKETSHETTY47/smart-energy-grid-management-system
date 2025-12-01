@@ -10,14 +10,13 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
 )
 
-// LambdaClient wraps AWS Lambda client for serverless function invocation
+// LambdaClient wraps AWS Lambda client
 type LambdaClient struct {
 	svc *lambda.Client
 	ctx context.Context
 }
 
-// NewLambdaClient creates a new Lambda client instance
-// YOUR ORIGINAL CONTRIBUTION: Initialize Lambda client for serverless computing
+// NewLambdaClient creates a new Lambda client
 func NewLambdaClient(region string) (*LambdaClient, error) {
 	ctx := context.Background()
 
@@ -32,7 +31,7 @@ func NewLambdaClient(region string) (*LambdaClient, error) {
 	}, nil
 }
 
-// AnomalyDetectionPayload represents the input for anomaly detection Lambda
+// AnomalyDetectionPayload is input for anomaly detection
 type AnomalyDetectionPayload struct {
 	FacilityID string  `json:"facility_id"`
 	MeterID    string  `json:"meter_id"`
@@ -42,14 +41,13 @@ type AnomalyDetectionPayload struct {
 	PowerKW    float64 `json:"power_kw"`
 }
 
-// AnalyticsProcessingPayload represents the input for analytics processing Lambda
+// AnalyticsProcessingPayload is input for analytics processing
 type AnalyticsProcessingPayload struct {
 	Date       string `json:"date"`
 	FacilityID string `json:"facility_id"`
 }
 
-// InvokeAnomalyDetection invokes the anomaly detection Lambda function
-// YOUR ORIGINAL CONTRIBUTION: Trigger serverless anomaly detection on-demand
+// InvokeAnomalyDetection invokes anomaly detection Lambda
 func (c *LambdaClient) InvokeAnomalyDetection(payload AnomalyDetectionPayload) (map[string]interface{}, error) {
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -66,12 +64,10 @@ func (c *LambdaClient) InvokeAnomalyDetection(payload AnomalyDetectionPayload) (
 		return nil, fmt.Errorf("failed to invoke Lambda: %w", err)
 	}
 
-	// Check for function error
 	if result.FunctionError != nil {
 		return nil, fmt.Errorf("Lambda function error: %s", *result.FunctionError)
 	}
 
-	// Parse response
 	var response map[string]interface{}
 	if err := json.Unmarshal(result.Payload, &response); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
@@ -80,8 +76,7 @@ func (c *LambdaClient) InvokeAnomalyDetection(payload AnomalyDetectionPayload) (
 	return response, nil
 }
 
-// InvokeAnalyticsProcessing invokes the analytics processing Lambda function
-// YOUR ORIGINAL CONTRIBUTION: Trigger serverless daily analytics generation
+// InvokeAnalyticsProcessing invokes analytics Lambda synchronously
 func (c *LambdaClient) InvokeAnalyticsProcessing(date, facilityID string) (map[string]interface{}, error) {
 	payload := AnalyticsProcessingPayload{
 		Date:       date,
@@ -96,7 +91,7 @@ func (c *LambdaClient) InvokeAnalyticsProcessing(date, facilityID string) (map[s
 	input := &lambda.InvokeInput{
 		FunctionName:   aws.String("analytics-processing"),
 		Payload:        payloadBytes,
-		InvocationType: "RequestResponse", // Synchronous invocation
+		InvocationType: "RequestResponse",
 	}
 
 	result, err := c.svc.Invoke(c.ctx, input)
@@ -116,8 +111,7 @@ func (c *LambdaClient) InvokeAnalyticsProcessing(date, facilityID string) (map[s
 	return response, nil
 }
 
-// InvokeAnalyticsAsync invokes analytics processing asynchronously
-// YOUR ORIGINAL CONTRIBUTION: Trigger background analytics processing without waiting
+// InvokeAnalyticsAsync invokes analytics Lambda asynchronously
 func (c *LambdaClient) InvokeAnalyticsAsync(date, facilityID string) error {
 	payload := AnalyticsProcessingPayload{
 		Date:       date,
@@ -132,7 +126,7 @@ func (c *LambdaClient) InvokeAnalyticsAsync(date, facilityID string) error {
 	input := &lambda.InvokeInput{
 		FunctionName:   aws.String("analytics-processing"),
 		Payload:        payloadBytes,
-		InvocationType: "Event", // Asynchronous invocation
+		InvocationType: "Event",
 	}
 
 	_, err = c.svc.Invoke(c.ctx, input)

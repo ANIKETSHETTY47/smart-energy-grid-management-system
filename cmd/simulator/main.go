@@ -10,6 +10,7 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// Reading represents energy meter data
 type Reading struct {
 	MeterID   string    `json:"meter_id"`
 	Timestamp time.Time `json:"timestamp"`
@@ -19,10 +20,15 @@ type Reading struct {
 }
 
 func main() {
+	// Seed random number generator
 	rand.Seed(time.Now().UnixNano())
+
+	// Load configuration
 	if err := config.Load(); err != nil {
 		log.Fatal().Err(err).Msg("config load failed")
 	}
+
+	// Connect to MQTT broker
 	opts := mqtt.NewClientOptions().AddBroker(config.MQTTBroker())
 	client := mqtt.NewClient(opts)
 	if token := client.Connect(); token.Wait() && token.Error() != nil {
@@ -30,7 +36,9 @@ func main() {
 	}
 	defer client.Disconnect(250)
 
+	// Send 100 simulated readings
 	for i := 0; i < 100; i++ {
+		// Generate random reading
 		r := Reading{
 			MeterID:   "meter-001",
 			Timestamp: time.Now(),
@@ -38,10 +46,14 @@ func main() {
 			Current:   5 + rand.Float64()*2,
 			PowerKW:   1 + rand.Float64(),
 		}
+
+		// Publish to MQTT
 		payload, _ := json.Marshal(r)
 		token := client.Publish("energy/readings", 0, false, payload)
 		token.Wait()
+
 		time.Sleep(500 * time.Millisecond)
 	}
+
 	log.Info().Msg("simulation done")
 }

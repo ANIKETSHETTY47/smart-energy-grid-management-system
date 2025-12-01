@@ -78,6 +78,10 @@ func (c *DynamoDBClient) PutReading(reading *domain.Reading, facilityID string) 
 }
 
 // GetRecentReadings retrieves recent readings for a facility (supports ANY device_id format)
+// GetRecentReadings retrieves all readings from DynamoDB within the specified duration.
+// It scans the table for entries with timestamps greater than (now - duration).
+// Device IDs are parsed to extract meter IDs, supporting formats like "device-001" and "facility-001-meter-1".
+// Returns a slice of domain.Reading or an error if the scan or unmarshal fails.
 func (c *DynamoDBClient) GetRecentReadings(facilityID string, duration time.Duration) ([]domain.Reading, error) {
 	startTime := time.Now().Add(-duration).Unix()
 
@@ -109,7 +113,7 @@ func (c *DynamoDBClient) GetRecentReadings(facilityID string, duration time.Dura
 	for _, r := range dbReadings {
 		// Extract meter ID from device_id (supports: device-001, device-002, facility-001-meter-1, etc.)
 		meterID := int64(1)
-		
+
 		// Try facility-meter format first
 		_, err := fmt.Sscanf(r.DeviceID, facilityID+"-meter-%d", &meterID)
 		if err != nil {

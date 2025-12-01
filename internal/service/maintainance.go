@@ -8,21 +8,21 @@ import (
 	"github.com/ANIKETSHETTY47/smart-energy-grid-management-system/internal/cloud"
 )
 
-// MaintenanceService handles predictive maintenance operations
+// MaintenanceService handles predictive maintenance stuff
 type MaintenanceService struct {
 	dynamoDB *cloud.DynamoDBClient
 	sns      *cloud.SNSClient
 	useCloud bool
 }
 
-// PredictMaintenanceNeeds analyzes equipment health and predicts maintenance requirements
-// YOUR ORIGINAL CONTRIBUTION: Uses custom library for maintenance prediction
+// PredictMaintenanceNeeds figures out when stuff is gonna break lol
+// Uses custom library for the predictions
 func (s *MaintenanceService) PredictMaintenanceNeeds(equipmentID string) (*MaintenancePrediction, error) {
 	if !s.useCloud || s.dynamoDB == nil {
 		return nil, fmt.Errorf("cloud services not enabled")
 	}
 
-	// Get equipment data
+	// Grab equipment data
 	equipment, err := s.dynamoDB.GetEquipment("facility-001")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get equipment: %w", err)
@@ -40,7 +40,7 @@ func (s *MaintenanceService) PredictMaintenanceNeeds(equipmentID string) (*Maint
 		return nil, fmt.Errorf("equipment not found")
 	}
 
-	// YOUR ORIGINAL CONTRIBUTION: Create AssetHealth profile
+	// Build the health profile
 	assetHealth := maintenance.AssetHealth{
 		HoursRun:           calculateHoursRun(targetEquipment),
 		FailureRatePerYear: 0.3, // Based on equipment type and history
@@ -48,11 +48,11 @@ func (s *MaintenanceService) PredictMaintenanceNeeds(equipmentID string) (*Maint
 		ServiceInterval:    365 * 24 * time.Hour, // Annual maintenance
 	}
 
-	// YOUR ORIGINAL CONTRIBUTION: Calculate failure risk using library
+	// Calculate how likely this thing is to fail
 	riskNext30Days := maintenance.FailureRisk(assetHealth.FailureRatePerYear, 30*24*time.Hour)
 	riskNext90Days := maintenance.FailureRisk(assetHealth.FailureRatePerYear, 90*24*time.Hour)
 
-	// YOUR ORIGINAL CONTRIBUTION: Predict next service date using library
+	// Find out when we need to fix it
 	nextService := maintenance.NextServiceDate(assetHealth)
 
 	prediction := &MaintenancePrediction{
@@ -65,7 +65,7 @@ func (s *MaintenanceService) PredictMaintenanceNeeds(equipmentID string) (*Maint
 		Recommendation:    generateRecommendation(riskNext30Days, targetEquipment.HealthScore),
 	}
 
-	// Send alert if high risk
+	// Yeet an alert if things look sus
 	if riskNext30Days > 0.5 || targetEquipment.HealthScore < 75 {
 		s.sendMaintenanceAlert(prediction)
 	}

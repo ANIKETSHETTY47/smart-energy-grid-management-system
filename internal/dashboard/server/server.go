@@ -17,6 +17,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// no cap, we trust everyone here
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		return true
@@ -34,10 +35,7 @@ type Server struct {
 	staticDir string
 }
 
-// New creates a new dashboard server that implements http.Handler
-// staticDir: path to static assets directory (e.g., "./web/dashboard/static")
-// templatesDir: path to templates directory (e.g., "./web/dashboard/templates")
-// apiClient: API client for backend communication
+// New - this is where the magic happens fr fr
 func New(staticDir, templatesDir string, apiClient *api.Client) http.Handler {
 	funcMap := template.FuncMap{
 		"toJSON": toJSON,
@@ -46,11 +44,11 @@ func New(staticDir, templatesDir string, apiClient *api.Client) http.Handler {
 		},
 	}
 
-	// Parse templates from the specified directory
+	// loading templates rn
 	tmplPattern := filepath.Join(templatesDir, "*.html")
 	tmpl := template.Must(template.New("base").Funcs(funcMap).ParseGlob(tmplPattern))
 
-	// Parse partials if they exist
+	// grab partials if they vibe here
 	partialsPattern := filepath.Join(templatesDir, "partials", "*.html")
 	if matches, _ := filepath.Glob(partialsPattern); len(matches) > 0 {
 		tmpl = template.Must(tmpl.ParseFiles(matches...))
@@ -58,7 +56,7 @@ func New(staticDir, templatesDir string, apiClient *api.Client) http.Handler {
 
 	facility := os.Getenv("FACILITY_ID")
 	if facility == "" {
-		facility = "facility-001"
+		facility = "facility-001" // default bestie
 	}
 
 	s := &Server{
@@ -79,8 +77,7 @@ func New(staticDir, templatesDir string, apiClient *api.Client) http.Handler {
 }
 
 func (s *Server) routes() {
-	// Static files are handled by Fiber in the main app
-	// Just handle the HTML and API routes here
+	// setting up all the routes, this is kinda important ngl
 	s.mux.HandleFunc("/healthz", s.handleHealthz)
 	s.mux.HandleFunc("/ws", s.handleWebSocket)
 	s.mux.HandleFunc("/", s.handleDashboard)
@@ -103,10 +100,12 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// new client just dropped
 	s.clientsMu.Lock()
 	s.clients[conn] = true
 	s.clientsMu.Unlock()
 
+	// cleanup when they ghost us
 	defer func() {
 		s.clientsMu.Lock()
 		delete(s.clients, conn)
@@ -114,6 +113,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		conn.Close()
 	}()
 
+	// send them the initial tea
 	ctx := context.Background()
 	stats, _ := s.getStats(ctx)
 	conn.WriteJSON(map[string]interface{}{
@@ -121,6 +121,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		"data": stats,
 	})
 
+	// keep the connection alive, it's giving energy
 	for {
 		if _, _, err := conn.ReadMessage(); err != nil {
 			break
@@ -129,6 +130,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleBroadcast() {
+	// slide into everyone's DMs with updates
 	for msg := range s.broadcast {
 		s.clientsMu.RLock()
 		for conn := range s.clients {
@@ -142,6 +144,7 @@ func (s *Server) handleBroadcast() {
 }
 
 func (s *Server) periodicUpdate() {
+	// spam updates every 10 sec, we stay active
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
@@ -176,6 +179,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	// check if we're still breathing
 	health, err := s.api.Health(ctx)
 	status := "offline"
 	if err == nil && health != nil {
@@ -190,6 +194,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
+	// fetch the data and serve looks
 	readings, _ := s.api.RecentReadings(ctx, s.facility, 24)
 	alerts, _ := s.api.Alerts(ctx, s.facility, "")
 
@@ -208,13 +213,13 @@ func (s *Server) handleEquipment(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	// Fetch real equipment from API
+	// get the squad from API
 	equipmentResp, err := s.api.Equipment(ctx, s.facility)
 	var equipment []models.Equipment
 	if err == nil && equipmentResp != nil {
 		equipment = equipmentResp.Equipment
 	} else {
-		// Fallback to dummy data if API fails
+		// API flopped, using dummy data as backup
 		equipment = []models.Equipment{
 			{ID: "eq-001", Type: "Transformer", Status: "operational", Health: 95.5},
 			{ID: "eq-002", Type: "Generator", Status: "operational", Health: 88.2},
@@ -237,6 +242,7 @@ func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
+	// filter by severity if they want
 	severity := r.URL.Query().Get("severity")
 	resp, _ := s.api.Alerts(ctx, s.facility, severity)
 
@@ -252,6 +258,7 @@ func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAcknowledge(w http.ResponseWriter, r *http.Request) {
+	// only POST vibes allowed
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -266,6 +273,7 @@ func (s *Server) handleAcknowledge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// mark as read basically
 	if err := s.api.AcknowledgeAlert(ctx, id); err != nil {
 		log.Println("ack error:", err)
 		http.Redirect(w, r, "/alerts?ack=fail", http.StatusSeeOther)
@@ -281,9 +289,10 @@ func (s *Server) handleAnalytics(w http.ResponseWriter, r *http.Request) {
 
 	var report interface{}
 	if r.Method == http.MethodPost {
+		// generate report for the date they picked
 		date := r.FormValue("date")
 		if date == "" {
-			date = time.Now().Format("2006-01-02")
+			date = time.Now().Format("2006-01-02") // today if nothing specified
 		}
 		res, err := s.api.GenerateAnalytics(ctx, s.facility, date)
 		if err != nil {
@@ -308,6 +317,7 @@ func (s *Server) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
+	// just the stats in JSON, clean and simple
 	stats, err := s.getStats(ctx)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -319,12 +329,14 @@ func (s *Server) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) status(ctx context.Context) string {
+	// are we online or nah
 	if h, err := s.api.Health(ctx); err == nil && h != nil {
 		return "online"
 	}
 	return "offline"
 }
 
+// turn stuff into JSON for templates
 func toJSON(v interface{}) template.JS {
 	b, _ := json.Marshal(v)
 	return template.JS(b)

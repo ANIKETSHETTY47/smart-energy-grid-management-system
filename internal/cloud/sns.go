@@ -10,15 +10,14 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sns"
 )
 
-// SNSClient wraps AWS SNS client for notification operations
+// SNSClient wraps AWS SNS client for sending notifications
 type SNSClient struct {
 	svc      *sns.Client
 	topicArn string
 	ctx      context.Context
 }
 
-// NewSNSClient creates a new SNS client instance
-// YOUR ORIGINAL CONTRIBUTION: Initialize SNS client for alert notifications
+// NewSNSClient creates a new SNS client - pretty straightforward ngl
 func NewSNSClient(region, topicArn string) (*SNSClient, error) {
 	ctx := context.Background()
 
@@ -34,8 +33,7 @@ func NewSNSClient(region, topicArn string) (*SNSClient, error) {
 	}, nil
 }
 
-// SendAlert sends an alert notification via SNS
-// YOUR ORIGINAL CONTRIBUTION: Publish alert messages to SNS topic
+// SendAlert sends an alert notification - this hits different when alerts pop off
 func (c *SNSClient) SendAlert(subject, message string) error {
 	input := &sns.PublishInput{
 		TopicArn: aws.String(c.topicArn),
@@ -52,8 +50,7 @@ func (c *SNSClient) SendAlert(subject, message string) error {
 	return nil
 }
 
-// SendAnomalyAlert sends a specific alert for detected anomalies
-// YOUR ORIGINAL CONTRIBUTION: Format and send anomaly detection alerts
+// SendAnomalyAlert sends alerts when things are giving weird vibes
 func (c *SNSClient) SendAnomalyAlert(facilityID, meterID string, consumption, deviation float64) error {
 	subject := fmt.Sprintf("Energy Grid Alert: Anomaly Detected at %s", facilityID)
 	message := fmt.Sprintf(
@@ -74,8 +71,7 @@ func (c *SNSClient) SendAnomalyAlert(facilityID, meterID string, consumption, de
 	return c.SendAlert(subject, message)
 }
 
-// SendMaintenanceAlert sends a predictive maintenance alert
-// YOUR ORIGINAL CONTRIBUTION: Notify about equipment maintenance needs
+// SendMaintenanceAlert lets you know when equipment is about to ghost you
 func (c *SNSClient) SendMaintenanceAlert(equipmentID string, healthScore float64, predictedDate time.Time) error {
 	subject := "Predictive Maintenance Alert"
 	message := fmt.Sprintf(
@@ -92,8 +88,7 @@ func (c *SNSClient) SendMaintenanceAlert(equipmentID string, healthScore float64
 	return c.SendAlert(subject, message)
 }
 
-// SendBatchAlerts sends multiple alerts in one notification
-// YOUR ORIGINAL CONTRIBUTION: Aggregate multiple alerts for efficiency
+// SendBatchAlerts sends multiple alerts at once - efficiency is the vibe
 func (c *SNSClient) SendBatchAlerts(alerts []string) error {
 	if len(alerts) == 0 {
 		return nil

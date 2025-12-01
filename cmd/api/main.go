@@ -4,11 +4,11 @@ import (
 	"os"
 
 	"github.com/ANIKETSHETTY47/smart-energy-grid-management-system/internal/config"
+	dashboardAPI "github.com/ANIKETSHETTY47/smart-energy-grid-management-system/internal/dashboard/api"
+	dashboardServer "github.com/ANIKETSHETTY47/smart-energy-grid-management-system/internal/dashboard/server"
 	"github.com/ANIKETSHETTY47/smart-energy-grid-management-system/internal/database"
 	httpHandlers "github.com/ANIKETSHETTY47/smart-energy-grid-management-system/internal/http"
 	"github.com/ANIKETSHETTY47/smart-energy-grid-management-system/internal/service"
-	dashboardAPI "github.com/ANIKETSHETTY47/smart-energy-grid-management-system/internal/dashboard/api"
-	dashboardServer "github.com/ANIKETSHETTY47/smart-energy-grid-management-system/internal/dashboard/server"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/adaptor"
 	"github.com/gofiber/fiber/v2/middleware/cors"
@@ -31,11 +31,12 @@ func fileExists(path string) bool {
 func main() {
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
 
+	// Load configuration
 	if err := config.Load(); err != nil {
 		log.Fatal().Err(err).Msg("config load failed")
 	}
 
-	// Only connect to database if not using cloud services
+	// Connect to database if not using cloud
 	var db *sqlx.DB
 	useCloud := viper.GetBool("USE_CLOUD_SERVICES")
 	if !useCloud {
@@ -49,16 +50,18 @@ func main() {
 		log.Info().Msg("Using cloud services (DynamoDB) - skipping PostgreSQL connection")
 	}
 
+	// Initialize services
 	svcs, err := service.New(db)
 	if err != nil {
 		log.Fatal().Err(err).Msg("service initialization failed")
 	}
 
+	// Create Fiber app
 	app := fiber.New(fiber.Config{
 		AppName: "Smart Energy Grid API v1.0",
 	})
 
-	// Middleware
+	// Add middleware
 	app.Use(recover.New())
 	app.Use(logger.New())
 	app.Use(cors.New(cors.Config{
@@ -70,11 +73,11 @@ func main() {
 	// Register API routes
 	httpHandlers.Register(app, svcs)
 
-	// Check if dashboard files exist
+	// Check if dashboard exists
 	dashboardExists := fileExists("./web/dashboard/static")
-	
+
 	if dashboardExists {
-		// Create dashboard handler only if files exist
+		// Setup dashboard
 		dashClient := dashboardAPI.New()
 		dashHandler := dashboardServer.New(
 			"./web/dashboard/static",
@@ -82,32 +85,30 @@ func main() {
 			dashClient,
 		)
 
-		// Mount static assets
+		// Serve static files
 		app.Static("/static", "./web/dashboard/static")
 
-		// Dashboard WebSocket and API stats
+		// Dashboard routes
 		app.All("/healthz", adaptor.HTTPHandler(dashHandler))
 		app.All("/ws", adaptor.HTTPHandler(dashHandler))
 		app.Get("/api/stats", adaptor.HTTPHandler(dashHandler))
-
-		// Dashboard HTML routes
 		app.All("/dashboard", adaptor.HTTPHandler(dashHandler))
 		app.All("/equipment", adaptor.HTTPHandler(dashHandler))
 		app.All("/analytics", adaptor.HTTPHandler(dashHandler))
 		app.All("/alerts", adaptor.HTTPHandler(dashHandler))
 		app.Post("/alerts/acknowledge", adaptor.HTTPHandler(dashHandler))
-		
+
 		log.Info().Msg("Dashboard routes enabled")
 	} else {
-		// Fallback routes when dashboard is not deployed
+		// API-only health check
 		app.Get("/healthz", func(c *fiber.Ctx) error {
 			return c.JSON(fiber.Map{"status": "healthy", "service": "smart-energy-grid-api"})
 		})
-		
+
 		log.Info().Msg("Running in API-only mode (dashboard not deployed)")
 	}
 
-	// Support both API_ADDR and PORT for Elastic Beanstalk
+	// Get server address
 	addr := viper.GetString("API_ADDR")
 	if addr == "" {
 		port := os.Getenv("PORT")
@@ -117,6 +118,7 @@ func main() {
 		addr = ":" + port
 	}
 
+	// Start server
 	log.Info().Str("addr", addr).Msg("unified api + dashboard listening")
 	log.Fatal().Err(app.Listen(addr)).Msg("server exit")
 }

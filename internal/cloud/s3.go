@@ -11,15 +11,14 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-// S3Client wraps AWS S3 client for object storage operations
+// S3Client wraps AWS S3 for storing stuff in the cloud
 type S3Client struct {
 	svc    *s3.Client
 	bucket string
 	ctx    context.Context
 }
 
-// NewS3Client creates a new S3 client instance
-// YOUR ORIGINAL CONTRIBUTION: Initialize S3 client with AWS SDK v2
+// NewS3Client creates a fresh S3 client
 func NewS3Client(region, bucket string) (*S3Client, error) {
 	ctx := context.Background()
 
@@ -35,8 +34,7 @@ func NewS3Client(region, bucket string) (*S3Client, error) {
 	}, nil
 }
 
-// UploadReport uploads a PDF report to S3 and returns a presigned URL
-// YOUR ORIGINAL CONTRIBUTION: Upload file with presigned URL generation
+// UploadReport yeets a PDF to S3 and gives you a shareable link
 func (c *S3Client) UploadReport(key string, data []byte, contentType string) (string, error) {
 	// Upload the report to S3
 	input := &s3.PutObjectInput{
@@ -62,7 +60,7 @@ func (c *S3Client) UploadReport(key string, data []byte, contentType string) (st
 	}
 
 	presignResult, err := presignClient.PresignGetObject(c.ctx, presignInput, func(opts *s3.PresignOptions) {
-		opts.Expires = 1 * time.Hour // URL expires in 1 hour
+		opts.Expires = 1 * time.Hour // Link expires in 1 hour fr
 	})
 
 	if err != nil {
@@ -72,8 +70,7 @@ func (c *S3Client) UploadReport(key string, data []byte, contentType string) (st
 	return presignResult.URL, nil
 }
 
-// UploadDataFile uploads raw data file to S3 data lake
-// YOUR ORIGINAL CONTRIBUTION: Store time-series data in S3 for historical analysis
+// UploadDataFile dumps raw data into S3 for later
 func (c *S3Client) UploadDataFile(key string, data []byte) error {
 	input := &s3.PutObjectInput{
 		Bucket:      aws.String(c.bucket),
@@ -90,8 +87,7 @@ func (c *S3Client) UploadDataFile(key string, data []byte) error {
 	return nil
 }
 
-// DownloadFile downloads a file from S3
-// YOUR ORIGINAL CONTRIBUTION: Retrieve stored data from S3
+// DownloadFile grabs a file from S3
 func (c *S3Client) DownloadFile(key string) ([]byte, error) {
 	input := &s3.GetObjectInput{
 		Bucket: aws.String(c.bucket),
@@ -113,8 +109,7 @@ func (c *S3Client) DownloadFile(key string) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// ListReports lists all reports in the S3 bucket
-// YOUR ORIGINAL CONTRIBUTION: List objects with pagination support
+// ListReports shows what reports you've got in the bucket
 func (c *S3Client) ListReports(prefix string) ([]string, error) {
 	input := &s3.ListObjectsV2Input{
 		Bucket: aws.String(c.bucket),
@@ -138,8 +133,7 @@ func (c *S3Client) ListReports(prefix string) ([]string, error) {
 	return keys, nil
 }
 
-// DeleteFile deletes a file from S3
-// YOUR ORIGINAL CONTRIBUTION: Clean up old reports/data
+// DeleteFile removes a file from S3 (no cap)
 func (c *S3Client) DeleteFile(key string) error {
 	input := &s3.DeleteObjectInput{
 		Bucket: aws.String(c.bucket),

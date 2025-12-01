@@ -69,8 +69,8 @@ type DailyAnalytics struct {
 }
 
 type LambdaEvent struct {
-	Date       string `json:"date"`        // YYYY-MM-DD (optional; defaults to yesterday)
-	FacilityID string `json:"facility_id"` // optional; defaults to facility-001
+	Date       string `json:"date"`        // YYYY-MM-DD (defaults to yesterday if empty, nbd)
+	FacilityID string `json:"facility_id"` // defaults to facility-001 if not provided
 }
 
 type LambdaResponse struct {
@@ -86,7 +86,7 @@ func getenv(k, def string) string {
 }
 
 func init() {
-	// Let the SDK discover region from environment/role; no need to force-set AWS_REGION.
+	// SDK auto-discovers region from env, no cap
 	cfg, err := config.LoadDefaultConfig(defaultCtx)
 	if err != nil {
 		panic(fmt.Sprintf("unable to load AWS SDK config: %v", err))
@@ -94,7 +94,7 @@ func init() {
 	dynamoClient = dynamodb.NewFromConfig(cfg)
 	s3Client = s3.NewFromConfig(cfg)
 
-	// Env-driven names with safe defaults
+	// grab table/bucket names from env or use defaults
 	tableReadings = getenv("DDB_TABLE_READINGS", "energy-grid-readings")
 	tableAnalytics = getenv("DDB_TABLE_ANALYTICS", "AnalyticsSummaries")
 	s3Bucket = getenv("S3_BUCKET", "smart-energy-grid-reports-nci-2025")
@@ -106,7 +106,7 @@ func init() {
 func Handler(ctx context.Context, event LambdaEvent) (LambdaResponse, error) {
 	date := event.Date
 	if date == "" {
-		date = time.Now().AddDate(0, 0, -1).Format("2006-01-02") // default: yesterday
+		date = time.Now().AddDate(0, 0, -1).Format("2006-01-02") // yesterday vibes
 	}
 	facilityID := event.FacilityID
 	if facilityID == "" {
@@ -115,7 +115,7 @@ func Handler(ctx context.Context, event LambdaEvent) (LambdaResponse, error) {
 
 	fmt.Printf("Start daily aggregation: facility=%s date=%s\n", facilityID, date)
 
-	readings, err := getReadingsForDate(ctx, facilityID, date, 2000) // sensible cap; paginate if needed
+	readings, err := getReadingsForDate(ctx, facilityID, date, 2000) // sensible cap, can paginate if it's giving too much
 	if err != nil {
 		return fail(500, err)
 	}
@@ -129,7 +129,7 @@ func Handler(ctx context.Context, event LambdaEvent) (LambdaResponse, error) {
 	analytics := calculateDailyAnalytics(readings, date)
 
 	if err := storeAnalyticsSummary(ctx, facilityID, analytics); err != nil {
-		// Non-fatal: continue to S3 report so the day isn’t lost
+		// not a dealbreaker, just keep going so we don't lose the whole day
 		fmt.Printf("WARN storeAnalyticsSummary: %v\n", err)
 	}
 
@@ -157,9 +157,7 @@ func fail(code int, err error) (LambdaResponse, error) {
 	}, err
 }
 
-// --- Data access ---
-
-// getReadingsForDate scans all readings for the facility within the day
+// getReadingsForDate grabs all readings for the facility on a given day
 func getReadingsForDate(ctx context.Context, facilityID, date string, pageLimit int32) ([]Reading, error) {
 	startOfDay, err := time.Parse("2006-01-02", date)
 	if err != nil {
@@ -174,13 +172,13 @@ func getReadingsForDate(ctx context.Context, facilityID, date string, pageLimit 
 		all       []Reading
 		exclusive map[string]types.AttributeValue
 		pageCount int
-		maxPages  = 50 // guardrail
+		maxPages  = 50 // safety brake
 	)
 
 	for {
 		in := &dynamodb.ScanInput{
-			TableName:         aws.String(tableReadings),
-			FilterExpression:  aws.String("begins_with(device_id, :fid) AND #ts BETWEEN :start AND :end"),
+			TableName:        aws.String(tableReadings),
+			FilterExpression: aws.String("begins_with(device_id, :fid) AND #ts BETWEEN :start AND :end"),
 			ExpressionAttributeNames: map[string]string{
 				"#ts": "timestamp",
 			},
@@ -218,8 +216,6 @@ func getReadingsForDate(ctx context.Context, facilityID, date string, pageLimit 
 	return all, nil
 }
 
-// --- Analytics ---
-
 func calculateDailyAnalytics(readings []Reading, date string) DailyAnalytics {
 	points := make([]aggregator.Point, len(readings))
 	for i, r := range readings {
@@ -228,12 +224,12 @@ func calculateDailyAnalytics(readings []Reading, date string) DailyAnalytics {
 
 	totalPower := aggregator.Sum(points)
 	avgPower := safeAverage(points)
-	movingAvg := aggregator.MovingAverage(points, 12) // configurable if needed
+	movingAvg := aggregator.MovingAverage(points, 12) // tweak if needed fr
 
 	conv := &converter.EnergyConverter{}
 	totalConsumptionMWh := conv.KWhToMWh(totalPower)
 
-	// Simple cost model—tune as needed
+	// quick cost estimate—adjust rates to match reality
 	peakCost := conv.CalculateCost(totalPower*0.4, 0.20, "peak")
 	offPeakCost := conv.CalculateCost(totalPower*0.6, 0.20, "offpeak")
 	totalCost := peakCost + offPeakCost
@@ -246,7 +242,7 @@ func calculateDailyAnalytics(readings []Reading, date string) DailyAnalytics {
 	avgI := averageFloat(func(i int) float64 { return readings[i].Current }, len(readings))
 	voltageStd := stddevFloat(func(i int) float64 { return readings[i].Voltage }, len(readings), avgV)
 
-	// Apparent power ≈ V * I (average); avoid negative/NaN
+	// apparent power ≈ V * I (no negatives or NaNs allowed)
 	apparent := max0(avgV * avgI)
 	powerFactor := 0.0
 	if apparent > 0 {
@@ -304,7 +300,7 @@ func findMaxMin(points []aggregator.Point) (maxVal, minVal float64) {
 func calculateHourlyData(readings []Reading) map[string]HourlyData {
 	hourly := make(map[string]HourlyData, 24)
 	for _, r := range readings {
-		h := time.Unix(r.Timestamp, 0).Format("15") // "00".."23"
+		h := time.Unix(r.Timestamp, 0).Format("15") // hour in "00".."23"
 		data := hourly[h]
 		data.Count++
 		data.TotalPower += r.PowerKW
@@ -340,7 +336,7 @@ func derivePeakHour(hourly map[string]HourlyData) string {
 		}
 		return arr[i].max > arr[j].max
 	})
-	return arr[0].hour // "HH"
+	return arr[0].hour // returns "HH" format
 }
 
 func averageFloat(get func(i int) float64, n int) float64 {
@@ -389,14 +385,12 @@ func max0(x float64) float64 {
 	return x
 }
 
-// --- Persistence & reporting ---
-
 func storeAnalyticsSummary(ctx context.Context, facilityID string, analytics DailyAnalytics) error {
 	if facilityID == "" {
 		return errors.New("facilityID is empty")
 	}
 
-	// Flatten for DDB: include facilityId + date as the composite key if your table expects it.
+	// flatten everything for DDB—composite key = facilityId + date
 	item := map[string]interface{}{
 		"facilityId":          facilityID,
 		"date":                analytics.Date,
@@ -468,16 +462,14 @@ func generateReport(ctx context.Context, facilityID, date string, analytics Dail
 		return "", fmt.Errorf("s3 put: %w", err)
 	}
 
-	// Virtual-hosted–style URL (region-agnostic for public buckets or signed-URL flows)
+	// basic S3 URL (works for public buckets or signed-URL setups)
 	return fmt.Sprintf("https://%s.s3.amazonaws.com/%s", s3Bucket, url.PathEscape(key)), nil
 }
 
 func safePath(s string) string {
-	// simple sanitizer for S3 key path components
+	// just sanitize the path for S3
 	return url.PathEscape(s)
 }
-
-// --- Recommendations ---
 
 func generateRecommendations(a DailyAnalytics) []map[string]string {
 	var recs []map[string]string

@@ -110,7 +110,7 @@ func init() {
 		region, tableReadings, tableAlerts, topicArn)
 }
 
-// Handler processes DynamoDB Stream events (INSERT/MODIFY on EnergyReadings)
+// vibes check on DynamoDB stream events (new readings coming in hot)
 func Handler(ctx context.Context, event events.DynamoDBEvent) error {
 	fmt.Printf("Received %d stream records\n", len(event.Records))
 
@@ -132,7 +132,7 @@ func Handler(ctx context.Context, event events.DynamoDBEvent) error {
 		fmt.Printf("Record %d: facility=%s meter=%s ts=%d power=%.3f kW\n",
 			i, reading.FacilityID, reading.MeterID, reading.Timestamp, reading.PowerKW)
 
-		// Tunables via env
+		// grab settings from env vars fr fr
 		hours := mustAtoi(getenv("HISTORICAL_HOURS", "24"), 24)
 		window := mustAtoi(getenv("ANOMALY_WINDOW", "24"), 24)
 		threshold := mustAtof(getenv("ANOMALY_THRESHOLD_SIGMA", "2.0"), 2.0)
@@ -163,8 +163,7 @@ func Handler(ctx context.Context, event events.DynamoDBEvent) error {
 	return nil
 }
 
-// --- Helpers ---
-
+// turn DynamoDB stream image into actual Reading struct (no cap)
 func parseReading(image map[string]events.DynamoDBAttributeValue) (*Reading, error) {
 	if image == nil {
 		return nil, errors.New("empty image")
@@ -179,7 +178,7 @@ func parseReading(image map[string]events.DynamoDBAttributeValue) (*Reading, err
 		r.MeterID = v.String()
 	}
 	if v, ok := image["timestamp"]; ok && (v.DataType() == events.DataTypeNumber || v.DataType() == events.DataTypeString) {
-		// Streams can deliver numbers as strings; handle both
+		// numbers might show up as strings sometimes, handle both lowkey
 		if ts, err := strconv.ParseInt(v.String(), 10, 64); err == nil {
 			r.Timestamp = ts
 		}
@@ -207,12 +206,11 @@ func parseReading(image map[string]events.DynamoDBAttributeValue) (*Reading, err
 	return r, nil
 }
 
+// yoink past readings from DynamoDB for context
 func getHistoricalReadings(ctx context.Context, facilityID, meterID string, hours int, limit int32) ([]Reading, error) {
 	now := time.Now().Unix()
 	start := now - int64(hours*3600)
 
-	// Partition key is facilityId, sort key is timestamp.
-	// If you also key by meterId, you might need a GSI. Adjust KeyCondition accordingly.
 	input := &dynamodb.QueryInput{
 		TableName:              aws.String(tableReadings),
 		KeyConditionExpression: aws.String("facilityId = :fid AND #ts BETWEEN :start AND :end"),
@@ -224,8 +222,7 @@ func getHistoricalReadings(ctx context.Context, facilityID, meterID string, hour
 			":start": &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", start)},
 			":end":   &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", now)},
 		},
-		// Most recent first helps with “latest context” windows
-		ScanIndexForward: aws.Bool(false),
+		ScanIndexForward: aws.Bool(false), // newest first hits different
 		Limit:            aws.Int32(limit),
 	}
 
@@ -239,7 +236,7 @@ func getHistoricalReadings(ctx context.Context, facilityID, meterID string, hour
 		return nil, fmt.Errorf("unmarshal readings failed: %w", err)
 	}
 
-	// Optional: filter by meter when the table PK doesn’t include meterId
+	// filter by meter if needed
 	if meterID != "" {
 		filtered := all[:0]
 		for _, r := range all {
@@ -250,8 +247,7 @@ func getHistoricalReadings(ctx context.Context, facilityID, meterID string, hour
 		all = filtered
 	}
 
-	// We sorted desc; detector might not care, but stable ascending is nice
-	reverseInPlace(all)
+	reverseInPlace(all) // flip to chronological order
 	return all, nil
 }
 
@@ -261,6 +257,7 @@ func reverseInPlace(a []Reading) {
 	}
 }
 
+// run the anomaly detection algo (this is where the magic happens)
 func detectAnomaly(current *Reading, historical []Reading, window int, sigma float64) AnomalyResult {
 	if window <= 0 {
 		window = 24
@@ -269,7 +266,6 @@ func detectAnomaly(current *Reading, historical []Reading, window int, sigma flo
 		sigma = 2.0
 	}
 
-	// Build input to your library
 	n := len(historical)
 	lib := make([]anomaly.Reading, 0, n+1)
 	for _, r := range historical {
@@ -294,7 +290,6 @@ func detectAnomaly(current *Reading, historical []Reading, window int, sigma flo
 	mean := calculateMean(historical)
 	std := calculateStdDev(historical, mean)
 
-	// Safe deviation % when mean == 0
 	devPct := 0.0
 	if mean != 0 {
 		devPct = ((current.PowerKW - mean) / mean) * 100
@@ -304,9 +299,9 @@ func detectAnomaly(current *Reading, historical []Reading, window int, sigma flo
 	severity := "low"
 	switch {
 	case mean > 0 && current.PowerKW >= mean*2.0:
-		severity = "critical"
+		severity = "critical" // this is bussin (bad)
 	case mean > 0 && current.PowerKW >= mean*1.5:
-		severity = "high"
+		severity = "high" // kinda sus ngl
 	}
 
 	threshold := mean + std*sigma
@@ -314,7 +309,7 @@ func detectAnomaly(current *Reading, historical []Reading, window int, sigma flo
 		threshold = 0
 	}
 
-	// If no history, treat large absolute power as low-severity anomaly to avoid silence.
+	// no history? treat big numbers as sus just to be safe
 	if len(historical) == 0 && current.PowerKW > 0 {
 		isAnomaly = true
 		severity = "low"
@@ -355,6 +350,7 @@ func calculateStdDev(readings []Reading, mean float64) float64 {
 	return math.Sqrt(v / float64(len(readings)))
 }
 
+// save the alert to DynamoDB so we don't forget about it
 func storeAlert(ctx context.Context, reading *Reading, an AnomalyResult) error {
 	id := fmt.Sprintf("alert-%d-%d", time.Now().Unix(), time.Now().Nanosecond())
 
@@ -396,6 +392,7 @@ func storeAlert(ctx context.Context, reading *Reading, an AnomalyResult) error {
 	return nil
 }
 
+// blast out SNS notification (important people need to know asap)
 func sendAlert(ctx context.Context, reading *Reading, an AnomalyResult) error {
 	if topicArn == "" {
 		fmt.Println("SNS_TOPIC_ARN not set; skipping notification")

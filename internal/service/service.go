@@ -31,7 +31,7 @@ type Services struct {
 	UseCloud bool
 }
 
-// New creates services with cloud integration
+// New spins up services w/ cloud stuff
 func New(db *sqlx.DB) (*Services, error) {
 	repos := repository.New(db)
 
@@ -40,7 +40,7 @@ func New(db *sqlx.DB) (*Services, error) {
 		UseCloud: config.UseCloudServices(),
 	}
 
-	// Initialize cloud clients
+	// boot up the cloud clients fr fr
 	if svcs.UseCloud {
 		var err error
 
@@ -91,12 +91,12 @@ func New(db *sqlx.DB) (*Services, error) {
 		sns:      svcs.SNS,
 		useCloud: svcs.UseCloud,
 	}
-	
+
 	svcs.Equipment = &EquipmentService{
 		dynamoDB: svcs.DynamoDB,
 		useCloud: svcs.UseCloud,
 	}
-	
+
 	return svcs, nil
 }
 
@@ -107,7 +107,7 @@ type ReadingService struct {
 	useCloud bool
 }
 
-// FromMQTT processes MQTT message and stores reading
+// FromMQTT handles MQTT msgs and saves the data
 func (s *ReadingService) FromMQTT(topic string, payload []byte) error {
 	var r struct {
 		MeterID   string    `json:"meter_id"`
@@ -120,7 +120,7 @@ func (s *ReadingService) FromMQTT(topic string, payload []byte) error {
 		return err
 	}
 
-	// Parse meter ID
+	// parse the meter ID real quick
 	var meterIDInt int64 = 1
 	if r.MeterID != "" {
 		parsed, err := strconv.ParseInt(r.MeterID, 10, 64)
@@ -137,13 +137,13 @@ func (s *ReadingService) FromMQTT(topic string, payload []byte) error {
 		PowerKW:   r.PowerKW,
 	}
 
-	// Store in cloud
+	// yeet it to the cloud
 	if s.useCloud && s.dynamoDB != nil {
 		if err := s.dynamoDB.PutReading(rd, "facility-001"); err != nil {
 			return err
 		}
 
-		// Invoke Lambda for anomaly detection
+		// trigger Lambda to check for weird stuff
 		if s.lambda != nil {
 			payload := cloud.AnomalyDetectionPayload{
 				FacilityID: "facility-001",
@@ -168,7 +168,7 @@ func (s *ReadingService) FromMQTT(topic string, payload []byte) error {
 	return s.repos.InsertReading(rd)
 }
 
-// GetRecentReadings retrieves recent readings
+// GetRecentReadings grabs the latest readings
 func (s *ReadingService) GetRecentReadings(facilityID string, duration time.Duration) ([]domain.Reading, error) {
 	if s.useCloud && s.dynamoDB != nil {
 		return s.dynamoDB.GetRecentReadings(facilityID, duration)
@@ -195,7 +195,7 @@ type DailySummary struct {
 	ReadingCount        int       `json:"reading_count"`
 }
 
-// GetDailySummary calculates daily consumption summary
+// GetDailySummary crunches numbers for the daily recap
 func (s *AnalyticsService) GetDailySummary(facilityID string, date time.Time) (*DailySummary, error) {
 	readings, err := s.getReadingsForDate(facilityID, date)
 	if err != nil {
@@ -206,7 +206,7 @@ func (s *AnalyticsService) GetDailySummary(facilityID string, date time.Time) (*
 		return &DailySummary{Date: date}, nil
 	}
 
-	// Convert readings to points
+	// turn readings into data points
 	points := make([]aggregator.Point, len(readings))
 	for i, r := range readings {
 		points[i] = aggregator.Point{
@@ -215,11 +215,11 @@ func (s *AnalyticsService) GetDailySummary(facilityID string, date time.Time) (*
 		}
 	}
 
-	// Calculate aggregations
+	// do the math
 	totalConsumption := aggregator.Sum(points)
 	averagePower := aggregator.Average(points)
 
-	// Convert units
+	// convert units bc we fancy like that
 	conv := &converter.EnergyConverter{}
 	totalConsumptionMWh := conv.KWhToMWh(totalConsumption)
 	efficiency := conv.CalculateEfficiency(totalConsumption, averagePower*float64(len(readings)))
@@ -255,7 +255,7 @@ func (s *AnalyticsService) getReadingsForDate(facilityID string, date time.Time)
 	return []domain.Reading{}, nil
 }
 
-// GenerateDailyReport generates report using Lambda
+// GenerateDailyReport makes a report using Lambda
 func (s *AnalyticsService) GenerateDailyReport(facilityID, date string) (string, error) {
 	if !s.useCloud || s.lambda == nil {
 		return "", fmt.Errorf("cloud services not enabled")
@@ -266,7 +266,7 @@ func (s *AnalyticsService) GenerateDailyReport(facilityID, date string) (string,
 		return "", fmt.Errorf("failed to invoke analytics Lambda: %w", err)
 	}
 
-	// Extract report URL
+	// grab the report URL
 	if body, ok := result["body"].(map[string]interface{}); ok {
 		if reportURL, ok := body["report_url"].(string); ok {
 			return reportURL, nil
@@ -276,7 +276,7 @@ func (s *AnalyticsService) GenerateDailyReport(facilityID, date string) (string,
 	return "", fmt.Errorf("no report URL in response")
 }
 
-// ScheduleDailyAnalytics triggers analytics processing
+// ScheduleDailyAnalytics kicks off the analytics vibe check
 func (s *AnalyticsService) ScheduleDailyAnalytics(facilityID string) error {
 	if !s.useCloud || s.lambda == nil {
 		return fmt.Errorf("cloud services not enabled")
@@ -286,7 +286,7 @@ func (s *AnalyticsService) ScheduleDailyAnalytics(facilityID string) error {
 	return s.lambda.InvokeAnalyticsAsync(yesterday, facilityID)
 }
 
-// GenerateReport generates and stores report in S3
+// GenerateReport creates report and drops it in S3
 func (s *AnalyticsService) GenerateReport(facilityID string, startDate, endDate time.Time) (string, error) {
 	if !s.useCloud || s.s3 == nil {
 		return "", fmt.Errorf("cloud services not enabled")
@@ -311,14 +311,14 @@ type AlertService struct {
 	useCloud bool
 }
 
-// CreateAlert creates a new alert
+// CreateAlert drops a new alert
 func (s *AlertService) CreateAlert(facilityID, equipmentID, severity, alertType, message string) error {
 	if s.useCloud && s.dynamoDB != nil {
 		if err := s.dynamoDB.CreateAlert(facilityID, equipmentID, severity, alertType, message); err != nil {
 			return fmt.Errorf("failed to create alert in DynamoDB: %w", err)
 		}
 
-		// Send SNS notification
+		// blast out SNS notification
 		if s.sns != nil {
 			subject := fmt.Sprintf("[%s] %s Alert", severity, alertType)
 			if err := s.sns.SendAlert(subject, message); err != nil {
@@ -332,7 +332,7 @@ func (s *AlertService) CreateAlert(facilityID, equipmentID, severity, alertType,
 	return fmt.Errorf("local alert storage not implemented")
 }
 
-// GetAlerts retrieves alerts
+// GetAlerts pulls up alerts
 func (s *AlertService) GetAlerts(facilityID string, severityFilter *string) ([]cloud.Alert, error) {
 	if s.useCloud && s.dynamoDB != nil {
 		return s.dynamoDB.GetAlerts(facilityID, severityFilter)
@@ -341,7 +341,7 @@ func (s *AlertService) GetAlerts(facilityID string, severityFilter *string) ([]c
 	return []cloud.Alert{}, fmt.Errorf("local alert retrieval not implemented")
 }
 
-// AcknowledgeAlert marks alert as acknowledged
+// AcknowledgeAlert marks alert as seen
 func (s *AlertService) AcknowledgeAlert(alertID string) error {
 	if s.useCloud && s.dynamoDB != nil {
 		return s.dynamoDB.AcknowledgeAlert(alertID)
@@ -350,7 +350,7 @@ func (s *AlertService) AcknowledgeAlert(alertID string) error {
 	return fmt.Errorf("local alert acknowledgment not implemented")
 }
 
-// DetectAnomalies analyzes readings and creates alerts
+// DetectAnomalies checks readings for sus behavior and creates alerts
 func (s *AlertService) DetectAnomalies(facilityID string, readings []domain.Reading) error {
 	var sum float64
 	for _, r := range readings {
@@ -375,7 +375,7 @@ func (s *AlertService) DetectAnomalies(facilityID string, readings []domain.Read
 				return fmt.Errorf("failed to create anomaly alert: %w", err)
 			}
 
-			// Send SNS notification
+			// ping SNS with the tea
 			if s.useCloud && s.sns != nil {
 				s.sns.SendAnomalyAlert(facilityID, fmt.Sprintf("meter-%d", r.MeterID),
 					r.PowerKW, deviation)
@@ -386,13 +386,12 @@ func (s *AlertService) DetectAnomalies(facilityID string, readings []domain.Read
 	return nil
 }
 
-
 type EquipmentService struct {
 	dynamoDB *cloud.DynamoDBClient
 	useCloud bool
 }
 
-// GetEquipment retrieves all equipment for a facility
+// GetEquipment fetches all equipment for a spot
 func (s *EquipmentService) GetEquipment(facilityID string) ([]cloud.Equipment, error) {
 	if s.useCloud && s.dynamoDB != nil {
 		return s.dynamoDB.GetEquipment(facilityID)

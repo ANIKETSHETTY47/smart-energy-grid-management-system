@@ -19,19 +19,16 @@ type Client struct {
 	http    *http.Client
 }
 
-// New creates a new API client
-// If API_URL is not set, it uses relative paths for same-origin calls
+// New creates a new API client (no cap)
 func New() *Client {
 	base := os.Getenv("API_URL")
-	// Leave baseURL empty for same-origin calls in production
 	return &Client{
 		baseURL: base,
 		http:    &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
-// makeURL constructs the full URL for API calls
-// If baseURL is empty, returns the path as-is for same-origin calls
+// makeURL builds the URL (it's giving full path vibes)
 func (c *Client) makeURL(path string) string {
 	if c.baseURL == "" {
 		return path
